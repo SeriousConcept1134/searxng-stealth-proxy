@@ -42,7 +42,7 @@ time_range_support = True
 safesearch = True
 
 time_range_dict = {"day": "d", "week": "w", "month": "m", "year": "y"}
-filter_mapping = {0: "off", 1: "medium", 2: "high"}
+filter_mapping = {0: "off", 1: "images", 2: "active"}
 suggestion_xpath = '//div[contains(@class, "ouy7Mc")]//a'
 
 _arcid_range = string.ascii_letters + string.digits + "_-"
@@ -88,7 +88,8 @@ def request(query: str, params: "OnlineParams") -> None:
     # 1. Build the real Google URL locally
     start = (params["pageno"] - 1) * 10
     hl = params["language"].split("-")[0]
-    google_url = f"https://www.google.com/search?q={urlencode({'q': query})[2:]}&hl={hl}&start={start}"
+    safe = filter_mapping.get(params["safesearch"], "images")
+    google_url = f"https://www.google.com/search?q={urlencode({'q': query})[2:]}&hl={hl}&start={start}&safe={safe}"
     
     # 2. Wrap it for sxng-proxy
     proxy_url = "http://sxng-proxy:5000/search"

@@ -105,9 +105,16 @@ async def search(request: Request):
             except: pass
             await asyncio.sleep(0.25 + (random.random() * 0.1)) # Add jitter
             
-        # 2. Wait for lazy-loaded content (Crucial for thumbnails)
+        # 2. Trigger lazy-loading by scrolling
         if detected:
-            await asyncio.sleep(2.0 + random.random()) # Jittered dwell time
+            try:
+                # Scroll to bottom then back up to ensure all lazy elements trigger
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight/2);")
+                await asyncio.sleep(0.5)
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
+                await asyncio.sleep(1.5 + random.random()) 
+            except:
+                await asyncio.sleep(2.0)
             
         raw_content = await page.get_content()
         

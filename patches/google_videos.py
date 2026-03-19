@@ -82,9 +82,9 @@ def get_google_info(params: "OnlineParams", eng_traits: EngineTraits) -> dict[st
 
 def detect_google_sorry(resp):
     if resp.headers.get("X-Google-Captcha") == "true":
-        raise SearxEngineCaptchaException()
+        raise SearxEngineCaptchaException(suspended_time=0)
     if resp.url.host == "sorry.google.com" or resp.url.path.startswith("/sorry"):
-        raise SearxEngineCaptchaException()
+        raise SearxEngineCaptchaException(suspended_time=0)
 
 def request(query: str, params: "OnlineParams") -> None:
     # 1. Build the real Google URL locally

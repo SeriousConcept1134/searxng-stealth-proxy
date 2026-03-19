@@ -118,10 +118,17 @@ async def search(request: Request):
                     logger.info("Fast-path triggered: Skipping full scroll")
                     await asyncio.sleep(0.3) # Minimal settle for late-arriving JS
                 else:
-                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight/2);")
-                    await asyncio.sleep(0.5)
-                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
-                    await asyncio.sleep(1.5 + random.random()) 
+                    # Suggestion #3: Smart Scrolling
+                    # Targeted scroll to the last visible result to trigger lazy-loading
+                    logger.info("Slow-path: Performing targeted scroll")
+                    scroll_js = f"""
+                        const results = document.querySelectorAll('{selectors}');
+                        if (results.length > 0) {{
+                            results[results.length - 1].scrollIntoView({{behavior: 'instant', block: 'end'}});
+                        }}
+                    """
+                    await page.evaluate(scroll_js)
+                    await asyncio.sleep(0.8 + (random.random() * 0.5)) 
             except:
                 await asyncio.sleep(1.0)
             

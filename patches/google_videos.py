@@ -35,7 +35,7 @@ about = {
     "results": "HTML",
 }
 
-categories = ["general", "web"]
+categories = ["videos"]
 paging = True
 max_page = 50
 time_range_support = True
@@ -88,7 +88,7 @@ def request(query: str, params: "OnlineParams") -> None:
     # 1. Build the real Google URL locally
     start = (params["pageno"] - 1) * 10
     hl = params["language"].split("-")[0]
-    google_url = f"https://www.google.com/search?q={urlencode({'q': query})[2:]}&hl={hl}&start={start}"
+    google_url = f"https://www.google.com/search?q={urlencode({'q': query})[2:]}&tbm=vid&hl={hl}&start={start}"
     
     # 2. Wrap it for sxng-proxy
     proxy_url = "http://sxng-proxy:5000/search"
@@ -117,7 +117,7 @@ def response(resp: "SXNG_Response"):
     results = EngineResults()
     dom = html.fromstring(resp.text)
 
-    for result in eval_xpath_list(dom, './/div[contains(@class, "MjjYud")] | .//div[contains(@class, "Gx5Zad")] | .//div[contains(@class, "Z1YvVd")]'):
+    for result in eval_xpath_list(dom, './/div[contains(@class, "MjjYud")] | .//div[contains(@class, "Gx5Zad")] | .//div[contains(@class, "Z1YvVd")] | .//div[contains(@class, "WVV5ke")]'):
         try:
             # Title
             title_tag = eval_xpath_getindex(result, './/h3 | .//div[contains(@role, "heading")] | .//div[contains(@role, "link")]', 0, default=None)
@@ -148,7 +148,7 @@ def response(resp: "SXNG_Response"):
             thumbnail = None
             
             # YouTube Reconstruction
-            yt_id_match = re.search(r'(?:v=|\/live\/|embed\/|youtu\.be\/)([0-9A-Za-z_-]{11})', url)
+            yt_id_match = re.search(r'(?:v=|/live/|embed/|youtu\.be/|/v/|/vi/)([0-9A-Za-z_-]{11})', url)
             if yt_id_match:
                 thumbnail = f"https://img.youtube.com/vi/{yt_id_match.group(1)}/mqdefault.jpg"
 

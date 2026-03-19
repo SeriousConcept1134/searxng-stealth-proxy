@@ -145,6 +145,7 @@ async def warm_profile():
         # Ensure proxy doesn't catch local loopback traffic
         args.append('--proxy-bypass-list=<-loopback>')
 
+    browser = None
     try:
         browser = await uc.start(
             user_data_dir=profile, 
@@ -159,27 +160,38 @@ async def warm_profile():
         print("  3. Check if your antivirus/firewall is blocking local websocket connections.")
         sys.exit(1)
     
-    print("[*] Opening IP check page...")
     try:
-        await browser.get('https://ifconfig.me')
-        await asyncio.sleep(2)
-    except Exception: pass
-    
-    print('\n[!] ACTION REQUIRED:')
-    print('[!] Solve any CAPTCHAs in the browser window.')
-    print('[!] CLOSE the browser window when finished to restart the proxy.')
-    
-    try:
-        await browser.get('https://www.google.com/search?q=funny+cats&tbm=vid')
-    except Exception as e:
-        print(f"[!] Navigation error: {e}")
+        print("[*] Opening IP check page...")
+        try:
+            await browser.get('https://ifconfig.me')
+            await asyncio.sleep(2)
+        except Exception: pass
+        
+        print('\n[!] ACTION REQUIRED:')
+        print('[!] Solve any CAPTCHAs in the browser window.')
+        print('[!] CLOSE the browser window when finished to restart the proxy.')
+        
+        try:
+            await browser.get('https://www.google.com/search?q=funny+cats&tbm=vid')
+        except Exception as e:
+            print(f"[!] Navigation error: {e}")
 
-    try:
-        while True:
-            await asyncio.sleep(1)
-            # Keep-alive check
-            await browser.connection.send(uc.cdp.browser.get_version())
-    except Exception: pass
+        # Detection loop
+        try:
+            while True:
+                await asyncio.sleep(1)
+                # This will raise an exception when the browser is closed
+                await browser.connection.send(uc.cdp.browser.get_version())
+        except (Exception, asyncio.CancelledError):
+            pass
+
+    finally:
+        if browser:
+            print("[*] Shutting down browser interface...")
+            try:
+                await browser.stop()
+            except Exception:
+                pass
 
     print('\n[*] Warmup complete. Restarting proxy container...')
     run_shell('podman start sxng-proxy 2>/dev/null || docker start sxng-proxy 2>/dev/null')

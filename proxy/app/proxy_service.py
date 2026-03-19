@@ -16,9 +16,6 @@ logger = logging.getLogger("sxng-proxy")
 app = FastAPI(title="SearXNG Stealth Proxy")
 browser = None
 
-# Essential cookies to preserve for CAPTCHA solves and human status
-ESSENTIAL_COOKIES = ["NID", "CONSENT", "AEC", "SOCS", "__Secure-ENID"]
-
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     logger.error(f"VALIDATION ERROR: {exc.errors()}")
@@ -30,7 +27,7 @@ async def get_browser():
         profile = os.environ.get('BRAVE_PROFILE', '/data/brave_profile')
         proxy = os.environ.get('PROXY_URL', '')
         
-        # Hardened privacy and stealth arguments
+        # Proven Stealth Arguments
         args = [
             "--no-sandbox",
             "--disable-setuid-sandbox",
@@ -38,14 +35,6 @@ async def get_browser():
             "--disable-infobars",
             "--window-size=1920,1080",
             "--start-maximized",
-            "--disable-features=IsolateOrigins,site-per-process,BrowsingTopics,InterestGroupStorage,AdMeasurement,PrivacySandboxSettings4,AutofillServerCommunication,OptimizationGuideFetching,Compose",
-            "--disable-sync",
-            "--disable-background-networking",
-            "--disable-client-side-phishing-detection",
-            "--disable-domain-reliability",
-            "--disable-default-apps",
-            "--metrics-recording-only",
-            "--no-report-upload",
             "--password-store=basic",
             "--disable-gpu" if os.name != 'nt' else "--enable-gpu",
         ]
@@ -53,7 +42,7 @@ async def get_browser():
         if proxy:
             args.append(f'--proxy-server={proxy}')
         
-        logger.info(f"Initializing Hardened Stealth Browser with profile: {profile}")
+        logger.info(f"Initializing Stable Stealth Browser with profile: {profile}")
         
         browser = await uc.start(
             user_data_dir=profile,
@@ -62,17 +51,6 @@ async def get_browser():
             browser_args=args
         )
     return browser
-
-async def cleanup_cookies(page):
-    """Delete non-essential cookies to prevent profiling while keeping CAPTCHA status."""
-    try:
-        import nodriver.cdp.network as network
-        all_cookies = await page.send(network.get_cookies())
-        for cookie in all_cookies:
-            if cookie.name not in ESSENTIAL_COOKIES:
-                await page.send(network.delete_cookies(name=cookie.name, domain=cookie.domain))
-    except Exception as e:
-        logger.warning(f"Cookie cleanup failed: {e}")
 
 def clean_html(content):
     """Shrink the HTML while keeping result markers AND thumbnail scripts"""
@@ -107,7 +85,6 @@ async def search(request: Request):
     page = b.main_tab
     
     try:
-        # User-Agent rotation support
         target_ua = ua or "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         
         import nodriver.cdp.network as network
@@ -145,9 +122,6 @@ async def search(request: Request):
             logger.error("BOT DETECTION TRIGGERED")
         
         content = clean_html(raw_content)
-        
-        # Post-search cookie cleanup (Hardening step #2)
-        await cleanup_cookies(page)
         
         duration = time.perf_counter() - start_perf
         logger.info(f"Done in {duration:.2f}s. Results found: {detected}")

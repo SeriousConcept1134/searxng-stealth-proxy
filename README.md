@@ -81,12 +81,26 @@ Modify your SearXNG `docker-compose.yaml` to mount the patches over the core fil
 ```yaml
 services:
   searxng:
-    networks:
-      - searxng-net # Ensure you share the same network
+    # ... existing config ...
     volumes:
+      # Mount the patches
       - ./patches/google.py:/usr/local/searxng/searx/engines/google.py:ro
       - ./patches/google_videos.py:/usr/local/searxng/searx/engines/google_videos.py:ro
       - ./patches/client.py:/usr/local/searxng/searx/network/client.py:ro
+```
+
+#### 🛠️ Force Recompilation (Required)
+SearXNG images often ship with pre-compiled bytecode that will ignore your mounted `.py` files. **You must run this command** after your first install and after every image update to force SearXNG to use the patches:
+
+```bash
+# For Docker (replace 'docker' with 'podman' if needed)
+docker exec searxng sh -c "
+  rm -rf /usr/local/searxng/searx/engines/__pycache__ \
+         /usr/local/searxng/searx/network/__pycache__ && \
+  /usr/local/searxng/.venv/bin/python3 -m compileall \
+         /usr/local/searxng/searx/engines/ \
+         /usr/local/searxng/searx/network/
+" && docker restart searxng
 ```
 
 #### Significance of the Patches:

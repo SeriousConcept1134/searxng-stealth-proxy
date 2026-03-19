@@ -3,15 +3,16 @@
 This project provides a standalone browser-based stealth proxy to restore **Google** and **Google Videos** functionality in any existing SearXNG instance.
 
 ## 🚀 Features
-- **Bypass 403/429 Blocks**: Uses `nodriver` (Brave/Chrome) to simulate organic user behavior.
+- **Bypass 403/429 Blocks**: Uses a real Chromium engine (`nodriver`) to simulate organic user behavior.
 - **High-Fidelity Metadata**: Restores views, dates, and author information for Google Videos.
 - **IP Rotation (Optional)**: Includes a Cloudflare WARP profile for IP cleanliness.
 - **Surgical Patching**: Easy integration via Docker Volume Overlays.
+- **Intelligent Warming**: Automated host-side browser discovery for CAPTCHA solving.
 
 ## 📋 Prerequisites
 - Docker or Podman
 - Python 3.x
-- Brave Browser (installed on the host for manual CAPTCHA solving)
+- **Chromium-based Browser** installed on the host (Brave, Google Chrome, Microsoft Edge, Vivaldi, etc.) for manual CAPTCHA solving.
 
 ## 🛠️ Setup Instructions
 
@@ -56,9 +57,15 @@ Use this if you already have a Warp container (like `docker-warp-socks`) running
 ### 3. Profile Warming (CAPTCHA Solving)
 This step is **MANDATORY** to prevent Google from blocking the container immediately.
 ```bash
-./scripts/setup.sh
+# Setup the virtual environment (first time only)
+python3 -m venv venv
+./venv/bin/pip install -r requirements-host.txt
+
+# Run the warming script
 ./venv/bin/python scripts/manage.py
 ```
+- The script will intelligently scan your system for installed Chromium browsers (Brave, Chrome, Edge, Vivaldi, etc.).
+- If multiple browsers are found, you will be prompted to choose which one to use.
 - A browser window will open on your host machine.
 - **Note**: If you are using Warp, the browser will automatically use the Warp IP via the `HOST_PROXY_URL` you configured.
 - Solve any CAPTCHAs, then **close the browser window**.
@@ -92,7 +99,7 @@ This proxy is designed to be a "Stealth Sidecar." Here is how it works under the
 ### 1. X11 Virtual Display (Xvfb)
 Even when running in "headless" mode, modern browsers and bot-detection scripts often behave differently if no display is detected. 
 - The container runs **Xvfb** (X Virtual Framebuffer) to create a virtual screen (Display `:99`).
-- This ensures that Chromium/Brave has a valid rendering target, which helps in bypassing certain "headless-detection" fingerprints and ensures stability for automation.
+- This ensures that Chromium engine has a valid rendering target, which helps in bypassing certain "headless-detection" fingerprints and ensures stability for automation.
 
 ### 2. Stealth via `nodriver`
 The proxy uses the `nodriver` library, which communicates directly with the browser via the Chrome DevTools Protocol (CDP). 
@@ -101,7 +108,7 @@ The proxy uses the `nodriver` library, which communicates directly with the brow
 
 ### 3. "Warm Start" Profile Mirroring
 To ensure high availability and prevent data corruption:
-- Your "Master Profile" (containing the CAPTCHA session) is mounted as Read-Only or via a shared volume at `/data/brave_profile`.
+- Your "Master Profile" (containing the CAPTCHA session) is stored at `/data/brave_profile`.
 - On startup, the container **mirrors** this profile to a temporary working directory in `/tmp`.
 - This prevents the dreaded `SingletonLock` errors (which happen if a browser process crashes) and ensures that the container remains stateless and disposable.
 

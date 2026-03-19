@@ -1,19 +1,25 @@
+# Use a slim Debian base
 FROM docker.io/debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y \
-    python3 python3-pip python3-venv chromium curl xvfb gnupg2 \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Brave Browser (Optional but recommended)
-RUN curl -fsS https://dl.brave.com/install.sh | sh
+# Combine updates, essential tools, and Brave into one layer for maximum size reduction
+# Chromium is removed to save ~500MB
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv curl xvfb gnupg2 ca-certificates && \
+    curl -fsS https://dl.brave.com/install.sh | sh && \
+    apt-get purge -y curl gnupg2 && \
+    apt-get autoremove -y && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip3 install --break-system-packages -r requirements.txt
+# Use --no-cache-dir to keep the image lean
+RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
 COPY app/ ./app/
 
-# Warm-start entrypoint script
+# Entrypoint script: cleans up locks and starts the proxy
 RUN printf "#!/bin/bash\n\
 rm -f /tmp/.X99-lock\n\
 rm -f /data/brave_profile/Singleton*\n\

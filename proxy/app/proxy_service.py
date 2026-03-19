@@ -38,26 +38,35 @@ async def get_browser():
         if proxy:
             args.append(f'--proxy-server={proxy}')
         
-        logger.info(f"Initializing browser with profile: {profile}")
+        logger.info(f"Initializing browser: /usr/bin/brave-browser-stable with profile: {profile}")
+        
+        # Explicitly use the stable binary path
         browser = await uc.start(
             user_data_dir=profile,
+            browser_executable='/usr/bin/brave-browser-stable',
             headless=True,
             browser_args=args
         )
     return browser
 
 def clean_html(content):
+    """Shrink the HTML while keeping result markers AND thumbnail scripts"""
     try:
         dom = html.fromstring(content)
+        
+        # Remove heavy non-essential tags
         tags_to_strip = ['style', 'svg', 'noscript', 'header', 'footer', 'iframe', 'canvas']
         for tag_name in tags_to_strip:
             for tag in dom.xpath(f'//{tag_name}'):
                 tag.getparent().remove(tag)
+        
+        # Selective script removal: Keep scripts containing thumbnail data
         for script in dom.xpath('//script'):
             text = script.text or ""
             if "google.ldi" in text or "google.pim" in text or "dimg_" in text or "_setImagesSrc" in text:
-                continue
+                continue # Keep these for thumbnails
             script.getparent().remove(script)
+            
         return html.tostring(dom, encoding='unicode')
     except Exception as e:
         logger.warning(f"Cleanup failed: {e}")
@@ -65,7 +74,7 @@ def clean_html(content):
 
 @app.get('/search')
 async def search(request: Request):
-    # Manually extract parameters to bypass ANY validation issues
+    # Manually extract parameters to bypass validation issues
     url = request.query_params.get('url')
     ua = request.query_params.get('ua', '')
     
@@ -78,6 +87,7 @@ async def search(request: Request):
     page = b.main_tab
     
     try:
+        # Override User-Agent if requested
         if ua:
             import nodriver.cdp.network as network
             await page.send(network.set_user_agent_override(user_agent=ua))
@@ -85,6 +95,7 @@ async def search(request: Request):
         logger.info(f"Visiting: {url}")
         await page.get(url)
         
+        # 1. Wait for result containers
         detected = False
         selectors = ".MjjYud, #res, .islrc, .v7W49e, .ZIN69, .g, .Gx5Zad"
         for _ in range(50):
@@ -96,12 +107,14 @@ async def search(request: Request):
                 pass
             await asyncio.sleep(0.2)
             
+        # 2. Wait a bit more for lazy-loaded content
         if detected:
             await asyncio.sleep(2.0)
             
         raw_content = await page.get_content()
         content = clean_html(raw_content)
         
+        # Reset User-Agent to default after request
         if ua:
             await page.send(network.set_user_agent_override(user_agent=""))
             

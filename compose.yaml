@@ -1,0 +1,31 @@
+services:
+  sxng-proxy:
+    build: ./proxy
+    container_name: sxng-proxy
+    ports:
+      - "127.0.0.1:5000:5000"
+    environment:
+      - PROXY_URL=${PROXY_URL:-}
+    volumes:
+      - ./data/brave_profile:/data/brave_profile:z
+    profiles:
+      - standard
+      - warp
+    networks:
+      - searxng-net
+
+  searxng-warp:
+    image: docker.io/caas/warp-socks:latest
+    container_name: searxng-warp
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1080:9091" # Critical for host-side CAPTCHA solving
+    profiles:
+      - warp
+    networks:
+      - searxng-net
+
+networks:
+  searxng-net:
+    external: true
+    name: ${EXTERNAL_NETWORK:-searxng-net}

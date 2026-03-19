@@ -125,16 +125,17 @@ async def search(request: Request):
         except: pass
         
         # Safety Check: If we see "sorry.google.com" in the content, we were caught
-        if "sorry.google.com" in raw_content or "captcha" in raw_content.lower():
+        is_captcha = "sorry.google.com" in raw_content or "captcha" in raw_content.lower()
+        if is_captcha:
             logger.error("BOT DETECTION TRIGGERED")
-            # We don't stop the browser, we want to keep the session alive for the next attempt
         
         content = clean_html(raw_content)
         
         duration = time.perf_counter() - start_perf
         logger.info(f"Done in {duration:.2f}s. Results found: {detected}")
         
-        return HTMLResponse(content=content)
+        headers = {"X-Google-Captcha": "true"} if is_captcha else {}
+        return HTMLResponse(content=content, headers=headers)
         
     except Exception as e:
         logger.error(f"Proxy error: {e}")

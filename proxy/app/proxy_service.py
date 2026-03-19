@@ -118,12 +118,6 @@ async def search(request: Request):
             
         raw_content = await page.get_content()
         
-        # DEBUG: Save payload to file
-        try:
-            with open("/app/last_search.html", "w") as f:
-                f.write(raw_content)
-        except: pass
-        
         # Safety Check: If we see "sorry.google.com" in the content, we were caught
         is_captcha = "sorry.google.com" in raw_content or "captcha" in raw_content.lower()
         if is_captcha:

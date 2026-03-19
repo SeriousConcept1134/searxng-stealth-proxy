@@ -8,6 +8,7 @@ services:
       - PROXY_URL=${PROXY_URL:-}
     volumes:
       - ./data/brave_profile:/data/brave_profile:z
+      - ./proxy/app:/app/app:z
     profiles:
       - standard
       - warp

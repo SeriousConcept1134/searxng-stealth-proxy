@@ -40,10 +40,10 @@ async def get_browser():
         
         logger.info(f"Initializing browser: /usr/bin/brave-browser-stable with profile: {profile}")
         
-        # Explicitly use the stable binary path
+        # Explicitly use the stable binary path with the correct parameter name
         browser = await uc.start(
             user_data_dir=profile,
-            browser_executable='/usr/bin/brave-browser-stable',
+            browser_executable_path='/usr/bin/brave-browser-stable',
             headless=True,
             browser_args=args
         )

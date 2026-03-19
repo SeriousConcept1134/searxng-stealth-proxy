@@ -124,6 +124,9 @@ async def warm_profile():
     print('[*] Stopping proxy container to release lock...')
     run_shell('podman stop sxng-proxy 2>/dev/null || docker stop sxng-proxy 2>/dev/null')
     
+    print('[*] Waiting for filesystem to settle...')
+    await asyncio.sleep(2)
+    
     print('[*] Clearing singleton locks...')
     if sys.platform.startswith('win'):
         run_shell(f'del /q "{profile}\\Singleton*" 2>nul')
@@ -131,11 +134,30 @@ async def warm_profile():
         run_shell(f'rm -f {profile}/Singleton*')
     
     print('[*] Launching browser...')
-    browser = await uc.start(
-        user_data_dir=profile, 
-        browser_executable_path=browser_path,
-        browser_args=[f'--proxy-server={proxy}'] if proxy else []
-    )
+    # Use standard args to ensure local debugging port is accessible
+    args = [
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--password-store=basic'
+    ]
+    if proxy:
+        args.append(f'--proxy-server={proxy}')
+        # Ensure proxy doesn't catch local loopback traffic
+        args.append('--proxy-bypass-list=<-loopback>')
+
+    try:
+        browser = await uc.start(
+            user_data_dir=profile, 
+            browser_executable_path=browser_path,
+            browser_args=args
+        )
+    except Exception as e:
+        print(f"\n[!] Critical Error: Could not connect to browser: {e}")
+        print("[*] Troubleshooting steps:")
+        print("  1. Ensure all instances of the chosen browser are closed.")
+        print("  2. If problem persists, try a different browser.")
+        print("  3. Check if your antivirus/firewall is blocking local websocket connections.")
+        sys.exit(1)
     
     print("[*] Opening IP check page...")
     try:
@@ -147,11 +169,15 @@ async def warm_profile():
     print('[!] Solve any CAPTCHAs in the browser window.')
     print('[!] CLOSE the browser window when finished to restart the proxy.')
     
-    await browser.get('https://www.google.com/search?q=funny+cats&tbm=vid')
+    try:
+        await browser.get('https://www.google.com/search?q=funny+cats&tbm=vid')
+    except Exception as e:
+        print(f"[!] Navigation error: {e}")
 
     try:
         while True:
             await asyncio.sleep(1)
+            # Keep-alive check
             await browser.connection.send(uc.cdp.browser.get_version())
     except Exception: pass
 

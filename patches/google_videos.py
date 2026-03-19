@@ -118,7 +118,7 @@ def response(resp: "SXNG_Response"):
     results = EngineResults()
     dom = html.fromstring(resp.text)
 
-    for result in eval_xpath_list(dom, './/div[contains(@class, "MjjYud")] | .//div[contains(@class, "Gx5Zad")] | .//div[contains(@class, "Z1YvVd")] | .//div[contains(@class, "WVV5ke")]'):
+    for result in eval_xpath_list(dom, './/div[contains(@class, "MjjYud")] | .//div[contains(@class, "Gx5Zad")] | .//div[contains(@class, "Z1YvVd")] | .//div[contains(@class, "WVV5ke")] | .//div[contains(@class, "PmEWq")]'):
         try:
             # Title
             title_tag = eval_xpath_getindex(result, './/h3 | .//div[contains(@role, "heading")] | .//div[contains(@role, "link")]', 0, default=None)
@@ -186,19 +186,18 @@ def response(resp: "SXNG_Response"):
                 if 'R0lGODlhAQABAIAAAP///////yH5BAEKAAEALAAAAAABAAEAAAICTAEAOw' in thumbnail:
                     thumbnail = None
 
-            res = {"url": url, "title": title, "content": content or '', "thumbnail": thumbnail}
+            res = {
+                "url": url,
+                "title": title,
+                "content": content or '',
+                "thumbnail": thumbnail,
+                "template": "videos.html"
+            }
             
-            # Strictly Video Template (No Reels)
-            is_video = False
-            video_match = re.search(r'youtube\.com/(?:watch|live)|youtu\.be/|vimeo\.com/\d+|dailymotion\.com/video/', url)
-            if video_match and thumbnail:
-                is_video = True
-            
-            if is_video:
-                res['template'] = 'videos.html'
-                yt_id_match = re.search(r'v=([^&]+)', url)
-                if yt_id_match:
-                    res['iframe_src'] = f'https://www.youtube-nocookie.com/embed/{yt_id_match.group(1)}'
+            # Extract YouTube ID for iframe if applicable
+            yt_id_match = re.search(r'(?:v=|/live/|embed/|youtu\.be/)([0-9A-Za-z_-]{11})', url)
+            if yt_id_match:
+                res['iframe_src'] = f'https://www.youtube-nocookie.com/embed/{yt_id_match.group(1)}'
             
             results.append(res)
         except Exception:

@@ -173,14 +173,17 @@ async def warm_profile():
         
         try:
             await browser.get('https://www.google.com/search?q=funny+cats&tbm=vid')
-        except Exception as e:
-            print(f"[!] Navigation error: {e}")
+        except Exception:
+            pass
 
         # Detection loop
         try:
             while True:
                 await asyncio.sleep(1)
-                # This will raise an exception when the browser is closed
+                # Correct way to check if an asyncio.subprocess.Process is still running
+                if browser._process and browser._process.returncode is not None:
+                    break
+                # Backup check: try to send a command
                 await browser.connection.send(uc.cdp.browser.get_version())
         except (Exception, asyncio.CancelledError):
             pass
@@ -189,6 +192,7 @@ async def warm_profile():
         if browser:
             print("[*] Shutting down browser interface...")
             try:
+                # Stop the browser process explicitly
                 await browser.stop()
             except Exception:
                 pass

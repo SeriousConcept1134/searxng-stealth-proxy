@@ -42,7 +42,7 @@ def find_browsers():
 
     for browser in browser_definitions:
         # Check PATH first
-        for b in browser.binaries:
+        for b in browser['binaries']:
             path = shutil.which(b)
             if path:
                 found.append({"name": browser["name"], "path": path})
@@ -109,7 +109,7 @@ async def warm_profile():
                 else:
                     print("[!] Invalid choice, using option 1.")
                     browser_path = browsers[0]["path"]
-            except (ValueError, KeyboardInterrupt):
+            except (ValueError, KeyboardInterrupt, EOFError):
                 print("\n[*] Using default option 1.")
                 browser_path = browsers[0]["path"]
 

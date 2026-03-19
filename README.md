@@ -3,11 +3,10 @@
 This project provides a standalone browser-based stealth proxy to restore **Google** and **Google Videos** functionality in any existing SearXNG instance.
 
 ## 🚀 Features
-- **Bypass 403/429 Blocks**: Uses a real Chromium engine (`nodriver`) to simulate organic user behavior.
+- **Bypass 403/429 Blocks**: Uses `nodriver` (Brave/Chrome) to simulate organic user behavior.
 - **High-Fidelity Metadata**: Restores views, dates, and author information for Google Videos.
 - **IP Rotation (Optional)**: Includes a Cloudflare WARP profile for IP cleanliness.
 - **Surgical Patching**: Easy integration via Docker Volume Overlays.
-- **Intelligent Warming**: Automated host-side browser discovery for CAPTCHA solving.
 
 ## 📋 Prerequisites
 - Docker or Podman
@@ -56,14 +55,19 @@ Use this if you already have a Warp container (like `docker-warp-socks`) running
 
 ### 3. Profile Warming (CAPTCHA Solving)
 This step is **MANDATORY** to prevent Google from blocking the container immediately.
-```bash
-# Setup the virtual environment (first time only)
-python3 -m venv venv
-./venv/bin/pip install -r requirements-host.txt
 
-# Run the warming script
+#### **Linux Setup:**
+```bash
+./scripts/setup.sh
 ./venv/bin/python scripts/manage.py
 ```
+
+#### **Windows Setup:**
+```powershell
+.\scripts\setup.ps1
+.\venv\Scripts\python.exe scripts\manage.py
+```
+
 - The script will intelligently scan your system for installed Chromium browsers (Brave, Chrome, Edge, Vivaldi, etc.).
 - If multiple browsers are found, you will be prompted to choose which one to use.
 - A browser window will open on your host machine.
@@ -99,7 +103,7 @@ This proxy is designed to be a "Stealth Sidecar." Here is how it works under the
 ### 1. X11 Virtual Display (Xvfb)
 Even when running in "headless" mode, modern browsers and bot-detection scripts often behave differently if no display is detected. 
 - The container runs **Xvfb** (X Virtual Framebuffer) to create a virtual screen (Display `:99`).
-- This ensures that Chromium engine has a valid rendering target, which helps in bypassing certain "headless-detection" fingerprints and ensures stability for automation.
+- This ensures that Chromium/Brave has a valid rendering target, which helps in bypassing certain "headless-detection" fingerprints and ensures stability for automation.
 
 ### 2. Stealth via `nodriver`
 The proxy uses the `nodriver` library, which communicates directly with the browser via the Chrome DevTools Protocol (CDP). 
@@ -120,6 +124,9 @@ Instead of forcing users to maintain a custom SearXNG image, we use **Volume Ove
 ## 🔄 Maintenance
 If you start seeing "403" or "Captcha" results in SearXNG, simply run:
 ```bash
+# Linux
 ./venv/bin/python scripts/manage.py
+# Windows
+.\venv\Scripts\python.exe scripts\manage.py
 ```
 Solve the challenge, close the browser, and you are back online!

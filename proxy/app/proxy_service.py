@@ -16,6 +16,9 @@ logger = logging.getLogger("sxng-proxy")
 app = FastAPI(title="SearXNG Stealth Proxy")
 browser = None
 
+# Essential cookies to preserve for CAPTCHA solves and human status
+ESSENTIAL_COOKIES = ["NID", "CONSENT", "AEC", "SOCS", "__Secure-ENID"]
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     logger.error(f"VALIDATION ERROR: {exc.errors()}")
@@ -27,22 +30,30 @@ async def get_browser():
         profile = os.environ.get('BRAVE_PROFILE', '/data/brave_profile')
         proxy = os.environ.get('PROXY_URL', '')
         
-        # Human-like arguments to bypass bot detection
+        # Hardened privacy and stealth arguments
         args = [
             "--no-sandbox",
             "--disable-setuid-sandbox",
-            "--disable-blink-features=AutomationControlled", # Hides the 'navigator.webdriver' flag
+            "--disable-blink-features=AutomationControlled",
             "--disable-infobars",
             "--window-size=1920,1080",
             "--start-maximized",
-            "--disable-features=IsolateOrigins,site-per-process", # Helps with cross-domain framing
-            "--disable-gpu" if os.name != 'nt' else "--enable-gpu", # Containers usually lack GPU
+            "--disable-features=IsolateOrigins,site-per-process,BrowsingTopics,InterestGroupStorage,AdMeasurement,PrivacySandboxSettings4,AutofillServerCommunication,OptimizationGuideFetching,Compose",
+            "--disable-sync",
+            "--disable-background-networking",
+            "--disable-client-side-phishing-detection",
+            "--disable-domain-reliability",
+            "--disable-default-apps",
+            "--metrics-recording-only",
+            "--no-report-upload",
+            "--password-store=basic",
+            "--disable-gpu" if os.name != 'nt' else "--enable-gpu",
         ]
         
         if proxy:
             args.append(f'--proxy-server={proxy}')
         
-        logger.info(f"Initializing Stealth Browser with profile: {profile}")
+        logger.info(f"Initializing Hardened Stealth Browser with profile: {profile}")
         
         browser = await uc.start(
             user_data_dir=profile,
@@ -51,6 +62,17 @@ async def get_browser():
             browser_args=args
         )
     return browser
+
+async def cleanup_cookies(page):
+    """Delete non-essential cookies to prevent profiling while keeping CAPTCHA status."""
+    try:
+        import nodriver.cdp.network as network
+        all_cookies = await page.send(network.get_cookies())
+        for cookie in all_cookies:
+            if cookie.name not in ESSENTIAL_COOKIES:
+                await page.send(network.delete_cookies(name=cookie.name, domain=cookie.domain))
+    except Exception as e:
+        logger.warning(f"Cookie cleanup failed: {e}")
 
 def clean_html(content):
     """Shrink the HTML while keeping result markers AND thumbnail scripts"""
@@ -85,7 +107,7 @@ async def search(request: Request):
     page = b.main_tab
     
     try:
-        # If SearXNG provided a UA, use it, otherwise use a high-quality default
+        # User-Agent rotation support
         target_ua = ua or "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         
         import nodriver.cdp.network as network
@@ -96,19 +118,18 @@ async def search(request: Request):
         
         # 1. Wait for result containers with jitter
         detected = False
-        selectors = ".MjjYud, #res, .islrc, .v7W49e, .ZIN69, .g, .Gx5Zad, .WVV5ke"
+        selectors = ".MjjYud, #res, .islrc, .v7W49e, .ZIN69, .g, .Gx5Zad, .WVV5ke, .PmEWq"
         for _ in range(40):
             try:
                 if await page.evaluate(f"document.querySelector('{selectors}') !== null"):
                     detected = True
                     break
             except: pass
-            await asyncio.sleep(0.25 + (random.random() * 0.1)) # Add jitter
+            await asyncio.sleep(0.25 + (random.random() * 0.1))
             
         # 2. Trigger lazy-loading by scrolling
         if detected:
             try:
-                # Scroll to bottom then back up to ensure all lazy elements trigger
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight/2);")
                 await asyncio.sleep(0.5)
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
@@ -118,12 +139,15 @@ async def search(request: Request):
             
         raw_content = await page.get_content()
         
-        # Safety Check: If we see "sorry.google.com" in the content, we were caught
+        # Coordinated CAPTCHA Detection
         is_captcha = "sorry.google.com" in raw_content or "captcha" in raw_content.lower()
         if is_captcha:
             logger.error("BOT DETECTION TRIGGERED")
         
         content = clean_html(raw_content)
+        
+        # Post-search cookie cleanup (Hardening step #2)
+        await cleanup_cookies(page)
         
         duration = time.perf_counter() - start_perf
         logger.info(f"Done in {duration:.2f}s. Results found: {detected}")
@@ -133,7 +157,6 @@ async def search(request: Request):
         
     except Exception as e:
         logger.error(f"Proxy error: {e}")
-        # Only crash the browser on actual connection/internal errors
         global browser
         if browser:
             try: await browser.stop()

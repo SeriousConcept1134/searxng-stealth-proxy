@@ -82,7 +82,9 @@ async def search(request: Request):
         
     start_perf = time.perf_counter()
     b = await get_browser()
-    page = b.main_tab
+    # Suggestion #4: Tab Management (New tab per request)
+    # nodriver 0.48.1 uses get(new_tab=True) to spawn a new page
+    page = await b.get(new_tab=True)
     
     try:
         target_ua = ua or "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -155,6 +157,13 @@ async def search(request: Request):
             except: pass
         browser = None
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Close the tab after the search is complete
+        try:
+            await page.close()
+            logger.info("Closed tab")
+        except:
+            pass
 
 @app.get('/status')
 async def status():

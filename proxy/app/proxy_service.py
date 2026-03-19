@@ -96,23 +96,34 @@ async def search(request: Request):
         # 1. Wait for result containers with jitter
         detected = False
         selectors = ".MjjYud, #res, .islrc, .v7W49e, .ZIN69, .g, .Gx5Zad, .WVV5ke, .PmEWq"
-        for _ in range(40):
+        for i in range(40):
             try:
                 if await page.evaluate(f"document.querySelector('{selectors}') !== null"):
                     detected = True
                     break
             except: pass
-            await asyncio.sleep(0.25 + (random.random() * 0.1))
             
-        # 2. Trigger lazy-loading by scrolling
+            # Suggestion #5: Jitter Reduction (faster polling for the first second)
+            if i < 10:
+                await asyncio.sleep(0.1)
+            else:
+                await asyncio.sleep(0.25 + (random.random() * 0.1))
+            
+        # 2. Trigger lazy-loading by scrolling (only if needed)
         if detected:
             try:
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight/2);")
-                await asyncio.sleep(0.5)
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
-                await asyncio.sleep(1.5 + random.random()) 
+                # Suggestion #1: Fast-Path for metadata
+                # Check if thumbnails are already mapped in the DOM
+                if await page.evaluate("document.body.innerHTML.includes('_setImagesSrc')"):
+                    logger.info("Fast-path triggered: Skipping full scroll")
+                    await asyncio.sleep(0.3) # Minimal settle for late-arriving JS
+                else:
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight/2);")
+                    await asyncio.sleep(0.5)
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
+                    await asyncio.sleep(1.5 + random.random()) 
             except:
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(1.0)
             
         raw_content = await page.get_content()
         

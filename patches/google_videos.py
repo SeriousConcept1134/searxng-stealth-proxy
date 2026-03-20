@@ -89,7 +89,9 @@ def request(query: str, params: "OnlineParams") -> None:
     start = (params["pageno"] - 1) * 10
     hl = params["language"].split("-")[0]
     safe = filter_mapping.get(params["safesearch"], "images")
-    google_url = f"https://www.google.com/search?q={urlencode({'q': query})[2:]}&tbm=vid&hl={hl}&start={start}&safe={safe}"
+    google_url = f"https://www.google.com/search?q={urlencode({'q': query})[2:]}&tbm=vid&hl={hl}&safe={safe}"
+    if start > 0:
+        google_url += f"&start={start}"
     
     # 2. Wrap it for sxng-proxy
     proxy_url = "http://sxng-proxy:5000/search"

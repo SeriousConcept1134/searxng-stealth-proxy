@@ -12,7 +12,7 @@ import babel.languages
 from lxml import html
 from searx import logger
 from searx.enginelib.traits import EngineTraits
-from searx.exceptions import SearxEngineCaptchaException, SearxEngineAccessDeniedException
+from searx.exceptions import SearxEngineCaptchaException
 from searx.result_types import EngineResults
 from searx.locales import get_official_locales, language_tag, region_tag
 from searx.utils import (
@@ -81,10 +81,8 @@ def get_google_info(params: "OnlineParams", eng_traits: EngineTraits) -> dict[st
     return ret_val
 
 def detect_google_sorry(resp):
-    if resp.headers.get("X-Google-Captcha") == "true":
-        raise SearxEngineAccessDeniedException(message="CAPTCHA", suspended_time=-1)
     if resp.url.host == "sorry.google.com" or resp.url.path.startswith("/sorry"):
-        raise SearxEngineAccessDeniedException(message="CAPTCHA", suspended_time=-1)
+        raise SearxEngineCaptchaException()
 
 def request(query: str, params: "OnlineParams") -> None:
     # 1. Build the real Google URL locally

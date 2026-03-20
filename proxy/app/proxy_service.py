@@ -114,24 +114,55 @@ async def search(request: Request):
         # 2. Trigger lazy-loading by scrolling (only if needed)
         if detected:
             try:
-                # Suggestion #1: Fast-Path for metadata
-                # Check if thumbnails are already mapped in the DOM
-                if await page.evaluate("document.body.innerHTML.includes('_setImagesSrc')"):
-                    logger.info("Fast-path triggered: Skipping full scroll")
-                    await asyncio.sleep(0.3) # Minimal settle for late-arriving JS
-                else:
-                    # Suggestion #3: Smart Scrolling
-                    # Targeted scroll to the last visible result to trigger lazy-loading
-                    logger.info("Slow-path: Performing targeted scroll")
-                    scroll_js = f"""
+                # Full Page Stabilizer: Check for REAL thumbnails (ignoring 1x1 placeholders)
+                is_mapped_js = f"""
+                    (() => {{
                         const results = document.querySelectorAll('{selectors}');
-                        if (results.length > 0) {{
-                            results[results.length - 1].scrollIntoView({{behavior: 'instant', block: 'end'}});
+                        if (results.length === 0) return true;
+                        
+                        let mappedCount = 0;
+                        let imageResults = 0;
+                        const placeholder = 'R0lGODlhAQABAIA';
+                        
+                        for (const res of results) {{
+                            const img = res.querySelector('img');
+                            if (img) {{
+                                imageResults++;
+                                // Check if mapped to REAL data:image or real URL
+                                if (img.src && 
+                                    (img.src.startsWith('http') || 
+                                     (img.src.startsWith('data:image') && !img.src.includes(placeholder)))) {{
+                                    mappedCount++;
+                                }}
+                            }}
                         }}
-                    """
-                    await page.evaluate(scroll_js)
-                    await asyncio.sleep(0.8 + (random.random() * 0.5)) 
-            except:
+                        
+                        if (imageResults === 0) return true;
+                        return (mappedCount / imageResults) >= 0.9;
+                    }})()
+                """
+                
+                # Check if REAL thumbnails are already mapped
+                if await page.evaluate(is_mapped_js):
+                    logger.info("Fast-path triggered: Real images mapped")
+                    await asyncio.sleep(0.4)
+                else:
+                    # Slow-path: Smooth Stepped Scroll (25% increments)
+                    logger.info("Slow-path: Performing smooth stepped stabilization")
+                    for step in [0.25, 0.5, 0.75, 1.0]:
+                        await page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {step});")
+                        await asyncio.sleep(0.3)
+                    
+                    # Poll for mapping to complete (up to 3.0s)
+                    for _ in range(30):
+                        if await page.evaluate(is_mapped_js):
+                            break
+                        await asyncio.sleep(0.1)
+                    
+                    # Final cool-down for late JS execution
+                    await asyncio.sleep(0.4)
+            except Exception as e:
+                logger.warning(f"Stabilization failed: {e}")
                 await asyncio.sleep(1.0)
             
         raw_content = await page.get_content()

@@ -91,8 +91,75 @@ async def search(request: Request):
         import nodriver.cdp.network as network
         await page.send(network.set_user_agent_override(user_agent=target_ua))
         
-        logger.info(f"Visiting: {url}")
-        await page.get(url)
+        # --- HUMANIZED SEARCH FLOW ---
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        
+        parsed_incoming = urlparse(url)
+        params = parse_qs(parsed_incoming.query)
+        
+        query_text = params.get('q', [''])[0]
+        start_val = params.get('start', ['0'])[0]
+        safe_val = params.get('safe', [''])[0]
+        tbm_val = params.get('tbm', [''])[0]
+        hl_val = params.get('hl', ['en'])[0]
+        
+        if not query_text:
+            logger.warning(f"No query found in URL: {url}")
+            await page.get(url)
+        else:
+            # Determine Entry Point
+            entry_url = f"https://www.google.com/webhp?hl={hl_val}"
+            if tbm_val == 'vid':
+                entry_url += "&tbm=vid"
+            
+            logger.info(f"Humanizing search for: '{query_text}' (tbm={tbm_val})")
+            await page.get(entry_url)
+            
+            # Wait for search input
+            search_input = await page.select('textarea[name="q"], input[name="q"]', timeout=5)
+            if not search_input:
+                logger.error("Could not find search input field!")
+                await page.get(url) # Fallback to direct navigation
+            else:
+                # Type query and submit
+                await search_input.send_keys(query_text)
+                await asyncio.sleep(0.2)
+                await page.send(uc.cdp.input_.dispatch_key_event(
+                    type='keyDown', windows_virtual_key_code=13, native_virtual_key_code=13
+                ))
+                
+                # Wait for navigation to complete and results to appear
+                # We wait for the URL to change to a search results URL
+                for _ in range(30):
+                    await asyncio.sleep(0.2)
+                    if "/search" in page.url and "q=" in page.url:
+                        break
+                
+                # Now we have a "Validated URL" with sca_esv, sxsrf, etc.
+                validated_url = page.url
+                logger.info(f"Obtained validated URL: {validated_url}")
+                
+                # Re-inject start and safe if they are non-default
+                v_parsed = urlparse(validated_url)
+                v_params = parse_qs(v_parsed.query)
+                
+                needs_reload = False
+                if start_val != '0' and v_params.get('start', [''])[0] != start_val:
+                    v_params['start'] = [start_val]
+                    needs_reload = True
+                if safe_val and v_params.get('safe', [''])[0] != safe_val:
+                    v_params['safe'] = [safe_val]
+                    needs_reload = True
+                
+                if needs_reload:
+                    final_query = urlencode(v_params, doseq=True)
+                    final_url = urlunparse(v_parsed._replace(query=final_query))
+                    logger.info(f"Re-injecting parameters: {final_url}")
+                    await page.get(final_url)
+                else:
+                    logger.info("Validated URL is already correct.")
+        
+        # --- END HUMANIZED SEARCH FLOW ---
         
         # 1. Wait for result containers with jitter
         detected = False

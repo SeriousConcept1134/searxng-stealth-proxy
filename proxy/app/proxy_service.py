@@ -33,8 +33,7 @@ async def get_browser():
             "--disable-setuid-sandbox",
             "--disable-blink-features=AutomationControlled",
             "--disable-infobars",
-            "--window-size=1920,1080",
-            "--start-maximized",
+            "--window-size=1024,1366",
             "--password-store=basic",
             "--disable-gpu" if os.name != 'nt' else "--enable-gpu",
         ]

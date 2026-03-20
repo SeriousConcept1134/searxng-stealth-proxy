@@ -87,6 +87,7 @@ services:
       - ./patches/google.py:/usr/local/searxng/searx/engines/google.py:ro
       - ./patches/google_videos.py:/usr/local/searxng/searx/engines/google_videos.py:ro
       - ./patches/client.py:/usr/local/searxng/searx/network/client.py:ro
+      - ./patches/gsa_useragents.txt:/usr/local/searxng/searx/data/gsa_useragents.txt:ro
 ```
 
 #### 🛠️ Force Recompilation (Required)

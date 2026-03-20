@@ -115,6 +115,21 @@ async def warm_profile():
 
     print(f"[*] Starting warmup with: {browser_path}")
 
+    # Read UA from patches/gsa_useragents.txt
+    ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15" # Default
+    ua_file = os.path.join(repo_dir, 'patches', 'gsa_useragents.txt')
+    if os.path.exists(ua_file):
+        try:
+            with open(ua_file, 'r') as f:
+                content = f.read().strip()
+                if content:
+                    ua = content
+                    print(f"[*] Using dynamic User-Agent from {ua_file}")
+        except Exception as e:
+            print(f"[!] Warning: Could not read {ua_file}: {e}")
+    
+    print("[*] Simulating iPad Pro environment (1024x1366) with DevTools enabled...")
+
     proxy = os.environ.get('HOST_PROXY_URL', '')
     if proxy:
         print(f"[*] Using Proxy: {proxy}")
@@ -138,7 +153,10 @@ async def warm_profile():
     args = [
         '--no-first-run',
         '--no-default-browser-check',
-        '--password-store=basic'
+        '--password-store=basic',
+        '--auto-open-devtools-for-tabs',
+        '--window-size=1024,1366',
+        f'--user-agent={ua}'
     ]
     if proxy:
         args.append(f'--proxy-server={proxy}')

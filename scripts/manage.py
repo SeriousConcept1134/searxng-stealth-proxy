@@ -155,6 +155,7 @@ async def warm_profile():
         '--no-default-browser-check',
         '--password-store=basic',
         '--auto-open-devtools-for-tabs',
+        '--devtools',
         '--window-size=1024,1366',
         f'--user-agent={ua}'
     ]

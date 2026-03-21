@@ -22,6 +22,7 @@ DEFAULT_UA = (
     "(KHTML, like Gecko) Chrome/146.0.7680.153 Safari/537.36"
 )
 FATAL_BROWSER_ERRORS = (ConnectionRefusedError, ProcessLookupError, BrokenPipeError)
+_TIMEZONE_FALLBACK = 'America/New_York'
 
 # Serialise requests to avoid concurrent Google hits from the same session
 _search_semaphore = asyncio.Semaphore(1)
@@ -35,6 +36,9 @@ _NAVIGATOR_OVERRIDES = """
     Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
     Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
 """
+
+# Detected egress timezone — populated at browser startup
+_egress_timezone: str = _TIMEZONE_FALLBACK
 
 
 def load_ua() -> str:
@@ -50,6 +54,26 @@ def load_ua() -> str:
 
 def is_bot_detected(url: str) -> bool:
     return "/sorry/" in url or "sorry.google.com" in url
+
+
+async def detect_egress_timezone(proxy_url: str) -> str:
+    """Detect the IANA timezone of the current WARP egress IP.
+
+    Makes a request through the configured proxy to ip-api.com and
+    extracts the timezone field. Falls back to _TIMEZONE_FALLBACK on
+    any failure.
+    """
+    import httpx
+    try:
+        transport = httpx.AsyncHTTPTransport(proxy=proxy_url) if proxy_url else None
+        async with httpx.AsyncClient(transport=transport, timeout=5) as client:
+            resp = await client.get("http://ip-api.com/json?fields=timezone")
+            tz = resp.json().get("timezone", _TIMEZONE_FALLBACK)
+            logger.info(f"Detected egress timezone: {tz}")
+            return tz
+    except Exception as e:
+        logger.warning(f"Timezone detection failed, using fallback '{_TIMEZONE_FALLBACK}': {e}")
+        return _TIMEZONE_FALLBACK
 
 
 async def move_to_element(page, element) -> None:
@@ -155,7 +179,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 async def get_browser():
-    global browser
+    global browser, _egress_timezone
     if not browser:
         profile = os.environ.get('BRAVE_PROFILE', '/data/brave_profile')
         proxy = os.environ.get('PROXY_URL', '')
@@ -181,6 +205,10 @@ async def get_browser():
             headless=True,
             browser_args=args
         )
+
+        # Detect the egress timezone once after the browser and proxy are up
+        _egress_timezone = await detect_egress_timezone(proxy)
+
     return browser
 
 
@@ -233,6 +261,7 @@ async def _do_search(url: str) -> HTMLResponse | JSONResponse:
     try:
         import nodriver.cdp.network as network
         import nodriver.cdp.page as cdp_page
+        import nodriver.cdp.emulation as emulation
         from urllib.parse import urlparse, parse_qs
 
         target_ua = load_ua()
@@ -246,10 +275,11 @@ async def _do_search(url: str) -> HTMLResponse | JSONResponse:
             "Sec-CH-UA-Mobile": "?0",
             "Sec-CH-UA-Platform": '"Linux"',
         })))
-
-        # Inject navigator overrides before any page script runs
         await page.send(cdp_page.add_script_to_evaluate_on_new_document(
             source=_NAVIGATOR_OVERRIDES
+        ))
+        await page.send(emulation.set_timezone_override(
+            timezone_id=_egress_timezone
         ))
 
         # --- HUMANIZED SEARCH FLOW ---

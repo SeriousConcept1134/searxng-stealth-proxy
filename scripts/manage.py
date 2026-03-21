@@ -5,6 +5,8 @@ import asyncio
 import shutil
 import nodriver as uc
 
+_WARMUP_MARKER = '.needs_warmup'
+
 
 def find_browsers():
     """Find all valid Chromium-based browser binaries on the host."""
@@ -76,67 +78,74 @@ def load_env():
     return repo_dir
 
 
-async def warm_profile():
-    repo_dir = load_env()
-    profile = os.path.join(repo_dir, 'data', 'brave_profile')
+def get_profile_pool(repo_dir: str) -> list[dict]:
+    """Return all configured profiles as a list of dicts with index and path.
 
-    print(f"[*] Target Profile: {profile}")
+    Defaults to data/brave_profile_0, data/brave_profile_1, data/brave_profile_2
+    relative to the repo root. Individual paths can be overridden via
+    BRAVE_PROFILE_0/1/2 env vars if a non-standard layout is needed.
+    """
+    profiles = []
+    for i in range(3):
+        override = os.environ.get(f'BRAVE_PROFILE_{i}')
+        path = override if override else os.path.join(repo_dir, 'data', f'brave_profile_{i}')
+        profiles.append({"index": i, "path": path})
+    return profiles
 
-    browser_path = os.environ.get('BROWSER_PATH')
 
-    if not browser_path:
-        browsers = find_browsers()
+def needs_warmup(profile_path: str) -> bool:
+    """Return True if the profile has a .needs_warmup marker file."""
+    return os.path.exists(os.path.join(profile_path, _WARMUP_MARKER))
 
-        if not browsers:
-            print("\n[!] ERROR: No Chromium-based browser detected on your host system.")
-            print("[*] The warmup procedure requires a Chromium-based browser (Brave, Chrome, Edge, etc.)")
-            print("[*] Please install one, or set 'BROWSER_PATH' in your environment.")
-            sys.exit(1)
 
-        if len(browsers) == 1:
-            browser_path = browsers[0]["path"]
-            print(f"[*] Found {browsers[0]['name']}: {browser_path}")
-        else:
-            print("\n[*] Multiple Chromium browsers detected. Please choose one for the warmup:")
-            for i, b in enumerate(browsers, 1):
-                print(f"  {i}) {b['name']} ({b['path']})")
+def clear_warmup_marker(profile_path: str) -> None:
+    """Remove the .needs_warmup marker file from the profile directory."""
+    marker = os.path.join(profile_path, _WARMUP_MARKER)
+    try:
+        if os.path.exists(marker):
+            os.remove(marker)
+    except Exception as e:
+        print(f"[!] Warning: Could not remove warmup marker: {e}")
 
-            try:
-                choice = input("\nEnter number (default 1): ").strip()
-                idx = int(choice) - 1 if choice else 0
-                if 0 <= idx < len(browsers):
-                    browser_path = browsers[idx]["path"]
-                else:
-                    print("[!] Invalid choice, using option 1.")
-                    browser_path = browsers[0]["path"]
-            except (ValueError, KeyboardInterrupt, EOFError):
-                print("\n[*] Using default option 1.")
-                browser_path = browsers[0]["path"]
 
-    print(f"[*] Starting warmup with: {browser_path}")
+def select_browser(browser_path_override: str | None = None) -> str:
+    """Detect available browsers and return the path to use."""
+    if browser_path_override:
+        return browser_path_override
 
-    ua_file = os.path.join(repo_dir, 'patches', 'gsa_useragents.txt')
-    ua = (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/146.0.7680.153 Safari/537.36"
-    )
-    if os.path.exists(ua_file):
-        try:
-            with open(ua_file, 'r') as f:
-                content = f.read().strip()
-                if content:
-                    ua = content
-                    print(f"[*] Using User-Agent from {ua_file}")
-        except Exception as e:
-            print(f"[!] Warning: Could not read {ua_file}: {e}")
+    browsers = find_browsers()
 
-    print(f"[*] UA: {ua}")
+    if not browsers:
+        print("\n[!] ERROR: No Chromium-based browser detected on your host system.")
+        print("[*] Please install one, or set 'BROWSER_PATH' in your environment.")
+        sys.exit(1)
 
-    proxy = os.environ.get('HOST_PROXY_URL', '')
-    if proxy:
-        print(f"[*] Using Proxy: {proxy}")
-    else:
-        print("[!] Warning: No HOST_PROXY_URL found in .env. Using direct connection.")
+    if len(browsers) == 1:
+        print(f"[*] Found {browsers[0]['name']}: {browsers[0]['path']}")
+        return browsers[0]["path"]
+
+    print("\n[*] Multiple Chromium browsers detected. Please choose one for the warmup:")
+    for i, b in enumerate(browsers, 1):
+        print(f"  {i}) {b['name']} ({b['path']})")
+
+    try:
+        choice = input("\nEnter number (default 1): ").strip()
+        idx = int(choice) - 1 if choice else 0
+        if 0 <= idx < len(browsers):
+            return browsers[idx]["path"]
+        print("[!] Invalid choice, using option 1.")
+        return browsers[0]["path"]
+    except (ValueError, KeyboardInterrupt, EOFError):
+        print("\n[*] Using default option 1.")
+        return browsers[0]["path"]
+
+
+async def run_warmup(profile: dict, browser_path: str, proxy: str, ua: str) -> None:
+    """Run the full warmup sequence for a single profile."""
+    profile_path = profile["path"]
+    idx = profile["index"]
+
+    print(f"\n[*] Warming up profile {idx}: {profile_path}")
 
     print('[*] Stopping proxy container to release lock...')
     run_shell('podman stop sxng-proxy 2>/dev/null || docker stop sxng-proxy 2>/dev/null')
@@ -146,9 +155,9 @@ async def warm_profile():
 
     print('[*] Clearing singleton locks...')
     if sys.platform.startswith('win'):
-        run_shell(f'del /q "{profile}\\Singleton*" 2>nul')
+        run_shell(f'del /q "{profile_path}\\Singleton*" 2>nul')
     else:
-        run_shell(f'rm -f {profile}/Singleton*')
+        run_shell(f'rm -f {profile_path}/Singleton*')
 
     print('[*] Launching browser...')
     args = [
@@ -165,7 +174,7 @@ async def warm_profile():
     browser = None
     try:
         browser = await uc.start(
-            user_data_dir=profile,
+            user_data_dir=profile_path,
             browser_executable_path=browser_path,
             browser_args=args
         )
@@ -175,7 +184,7 @@ async def warm_profile():
         print("  1. Ensure all instances of the chosen browser are closed.")
         print("  2. If problem persists, try a different browser.")
         print("  3. Check if your antivirus/firewall is blocking local websocket connections.")
-        sys.exit(1)
+        return
 
     try:
         print("[*] Opening IP check page...")
@@ -187,7 +196,7 @@ async def warm_profile():
 
         print('\n[!] ACTION REQUIRED:')
         print('[!] Solve any CAPTCHAs in the browser window.')
-        print('[!] CLOSE the browser window when finished to restart the proxy.')
+        print('[!] CLOSE the browser window when finished.')
 
         try:
             await browser.get('https://www.google.com/search?q=funny+cats&tbm=vid')
@@ -211,9 +220,91 @@ async def warm_profile():
             except Exception:
                 pass
 
-    print('\n[*] Warmup complete. Restarting proxy container...')
+    clear_warmup_marker(profile_path)
+    print(f"[*] Warmup complete for profile {idx}. Marker cleared.")
+
+
+async def main():
+    repo_dir = load_env()
+    all_profiles = get_profile_pool(repo_dir)
+
+    ua_file = os.path.join(repo_dir, 'patches', 'gsa_useragents.txt')
+    ua = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/146.0.7680.153 Safari/537.36"
+    )
+    if os.path.exists(ua_file):
+        try:
+            with open(ua_file, 'r') as f:
+                content = f.read().strip()
+                if content:
+                    ua = content
+        except Exception as e:
+            print(f"[!] Warning: Could not read {ua_file}: {e}")
+
+    print(f"[*] UA: {ua}")
+
+    proxy = os.environ.get('HOST_PROXY_URL', '')
+    if proxy:
+        print(f"[*] Using Proxy: {proxy}")
+    else:
+        print("[!] Warning: No HOST_PROXY_URL found in .env. Using direct connection.")
+
+    browser_path = select_browser(os.environ.get('BROWSER_PATH'))
+    print(f"[*] Using browser: {browser_path}")
+
+    # Determine which profiles need warmup
+    flagged = [p for p in all_profiles if needs_warmup(p["path"])]
+    unflagged = [p for p in all_profiles if not needs_warmup(p["path"])]
+
+    if flagged:
+        # One or more profiles flagged — work through them
+        queue = list(flagged)
+        print(f"\n[*] {len(queue)} profile(s) require warmup: "
+              f"{[p['index'] for p in queue]}")
+
+        while queue:
+            profile = queue.pop(0)
+            await run_warmup(profile, browser_path, proxy, ua)
+
+            if queue:
+                print(f"\n[*] {len(queue)} profile(s) still need warmup: "
+                      f"{[p['index'] for p in queue]}")
+                try:
+                    answer = input("[?] Warm up next profile? [Y/n]: ").strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    answer = 'n'
+
+                if answer in ('n', 'no'):
+                    print("[*] Exiting. Remaining profiles will be warmed on next run.")
+                    break
+    else:
+        # No profiles flagged — ask which one the user wants to warm anyway
+        print("\n[*] No profiles currently marked for warmup.")
+        print("[*] Available profiles:")
+        for p in all_profiles:
+            print(f"  {p['index']}) {p['path']}")
+
+        try:
+            choice = input(
+                f"\nEnter profile index to warm up "
+                f"(0-{len(all_profiles) - 1}, default 0): "
+            ).strip()
+            idx = int(choice) if choice else 0
+            matched = [p for p in all_profiles if p["index"] == idx]
+            if not matched:
+                print(f"[!] Invalid index, using profile 0.")
+                matched = [all_profiles[0]]
+            profile = matched[0]
+        except (ValueError, KeyboardInterrupt, EOFError):
+            print("\n[*] Using profile 0.")
+            profile = all_profiles[0]
+
+        await run_warmup(profile, browser_path, proxy, ua)
+
+    print('\n[*] Restarting proxy container...')
     run_shell('podman start sxng-proxy 2>/dev/null || docker start sxng-proxy 2>/dev/null')
 
 
 if __name__ == '__main__':
-    asyncio.run(warm_profile())
+    asyncio.run(main())

@@ -14,7 +14,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sxng-proxy")
 
 app = FastAPI(title="SearXNG Stealth Proxy")
-browser = None
 
 UA_FILE = '/app/patches/gsa_useragents.txt'
 DEFAULT_UA = (
@@ -23,12 +22,13 @@ DEFAULT_UA = (
 )
 FATAL_BROWSER_ERRORS = (ConnectionRefusedError, ProcessLookupError, BrokenPipeError)
 _TIMEZONE_FALLBACK = 'America/New_York'
+_WARMUP_MARKER = '.needs_warmup'
 
 # Serialise requests to avoid concurrent Google hits from the same session
 _search_semaphore = asyncio.Semaphore(1)
 _last_request_time: float = 0.0
-_MIN_REQUEST_GAP = 3.5   # seconds — minimum gap between consecutive requests
-_MAX_REQUEST_JITTER = 2.5  # seconds — additional random jitter on top of the minimum
+_MIN_REQUEST_GAP = 3.5
+_MAX_REQUEST_JITTER = 2.5
 
 # Navigator overrides injected before any page script runs
 _NAVIGATOR_OVERRIDES = """
@@ -39,6 +39,70 @@ _NAVIGATOR_OVERRIDES = """
 
 # Detected egress timezone — populated at browser startup
 _egress_timezone: str = _TIMEZONE_FALLBACK
+
+# --- Profile rotation pool ---
+_PROFILES: list[str] = []
+_active_profile_idx: int = 0
+_profile_flagged: dict[int, bool] = {}
+_browser: uc.Browser | None = None
+
+
+def _init_profile_pool() -> None:
+    """Populate the profile pool from environment variables.
+
+    Reads BRAVE_PROFILE_0, BRAVE_PROFILE_1, BRAVE_PROFILE_2 and falls
+    back to the legacy BRAVE_PROFILE single-profile variable so existing
+    setups are not broken.
+    """
+    global _PROFILES, _profile_flagged
+
+    profiles = []
+    for i in range(3):
+        p = os.environ.get(f'BRAVE_PROFILE_{i}')
+        if p:
+            profiles.append(p)
+
+    if not profiles:
+        fallback = os.environ.get('BRAVE_PROFILE', '/data/brave_profile')
+        profiles = [fallback]
+
+    _PROFILES = profiles
+    _profile_flagged = {i: False for i in range(len(_PROFILES))}
+    logger.info(f"Profile pool initialised: {_PROFILES}")
+
+
+def _get_next_healthy_profile() -> tuple[str, int]:
+    """Return the next unflagged profile path and its index.
+
+    Rotates through the pool starting from the current active index.
+    If all profiles are flagged, returns the first profile with a warning.
+    """
+    for offset in range(len(_PROFILES)):
+        idx = (_active_profile_idx + offset) % len(_PROFILES)
+        if not _profile_flagged[idx]:
+            return _PROFILES[idx], idx
+    logger.warning("All profiles flagged — using profile 0 anyway, re-warm required")
+    return _PROFILES[0], 0
+
+
+def _write_warmup_marker(profile_path: str) -> None:
+    """Write a .needs_warmup marker file into the profile directory."""
+    try:
+        marker = os.path.join(profile_path, _WARMUP_MARKER)
+        with open(marker, 'w') as f:
+            f.write(str(time.time()))
+    except Exception as e:
+        logger.warning(f"Could not write warmup marker for {profile_path}: {e}")
+
+
+def _flag_active_profile() -> None:
+    """Flag the current active profile and write the warmup marker file."""
+    _profile_flagged[_active_profile_idx] = True
+    profile_path = _PROFILES[_active_profile_idx]
+    logger.warning(
+        f"Profile {_active_profile_idx} ({profile_path}) flagged — re-warm required"
+    )
+    _write_warmup_marker(profile_path)
 
 
 def load_ua() -> str:
@@ -57,12 +121,7 @@ def is_bot_detected(url: str) -> bool:
 
 
 async def detect_egress_timezone(proxy_url: str) -> str:
-    """Detect the IANA timezone of the current WARP egress IP.
-
-    Makes a request through the configured proxy to ip-api.com and
-    extracts the timezone field. Falls back to _TIMEZONE_FALLBACK on
-    any failure.
-    """
+    """Detect the IANA timezone of the current WARP egress IP."""
     import httpx
     try:
         transport = httpx.AsyncHTTPTransport(proxy=proxy_url) if proxy_url else None
@@ -77,11 +136,7 @@ async def detect_egress_timezone(proxy_url: str) -> str:
 
 
 async def move_to_element(page, element) -> None:
-    """Simulate cursor movement toward the element before clicking.
-
-    Dispatches a mouseover and mousemove event on the element via CDP
-    to produce a more natural interaction pattern before focus.
-    """
+    """Simulate cursor movement toward the element before clicking."""
     try:
         await page.evaluate("""
             (function() {
@@ -97,11 +152,7 @@ async def move_to_element(page, element) -> None:
 
 
 async def type_humanlike(page, text: str) -> None:
-    """Type text character by character via CDP key events.
-
-    Produces isTrusted: true keyboard events at the browser input stack
-    level, which synthetic JS dispatch cannot replicate.
-    """
+    """Type text character by character via CDP key events."""
     for char in text:
         await page.send(uc.cdp.input_.dispatch_key_event(
             type_='keyDown', text=char
@@ -114,12 +165,7 @@ async def type_humanlike(page, text: str) -> None:
 
 
 async def submit_search(page, search_input, query_text: str) -> bool:
-    """Simulate cursor movement, focus the input, type the query, and submit.
-
-    Moves the cursor to the element before clicking to produce a natural
-    interaction pattern. Tries Enter key first, falls back to JS form
-    submit if navigation does not occur within the expected window.
-    """
+    """Simulate cursor movement, focus the input, type the query, and submit."""
     await move_to_element(page, search_input)
     await search_input.click()
     await asyncio.sleep(random.uniform(0.2, 0.5))
@@ -149,10 +195,7 @@ async def submit_search(page, search_input, query_text: str) -> bool:
 
 
 def inject_params(validated_url: str, start_val: str, safe_val: str) -> str:
-    """Append missing start and safe params to the validated URL string.
-
-    Returns the URL unchanged if no injection is needed.
-    """
+    """Append missing start and safe params to the validated URL string."""
     from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
     parsed = urlparse(validated_url)
@@ -178,10 +221,16 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
-async def get_browser():
-    global browser, _egress_timezone
-    if not browser:
-        profile = os.environ.get('BRAVE_PROFILE', '/data/brave_profile')
+async def get_browser() -> uc.Browser:
+    """Return the active browser, starting a new one if needed."""
+    global _browser, _active_profile_idx, _egress_timezone
+
+    if not _browser:
+        if not _PROFILES:
+            _init_profile_pool()
+
+        profile, idx = _get_next_healthy_profile()
+        _active_profile_idx = idx
         proxy = os.environ.get('PROXY_URL', '')
 
         args = [
@@ -197,19 +246,35 @@ async def get_browser():
         if proxy:
             args.append(f'--proxy-server={proxy}')
 
-        logger.info(f"Initializing Stable Stealth Browser with profile: {profile}")
+        logger.info(f"Initializing browser with profile {idx} ({profile})")
 
-        browser = await uc.start(
+        _browser = await uc.start(
             user_data_dir=profile,
             browser_executable_path='/usr/bin/brave-browser-stable',
             headless=True,
             browser_args=args
         )
 
-        # Detect the egress timezone once after the browser and proxy are up
         _egress_timezone = await detect_egress_timezone(proxy)
 
-    return browser
+    return _browser
+
+
+async def _reset_browser() -> None:
+    """Stop the current browser and clear the global reference."""
+    global _browser
+    if _browser:
+        try:
+            await _browser.stop()
+        except Exception:
+            pass
+    _browser = None
+
+
+async def _rotate_profile() -> None:
+    """Flag the active profile, write the warmup marker, and reset the browser."""
+    _flag_active_profile()
+    await _reset_browser()
 
 
 def clean_html(content):
@@ -231,6 +296,11 @@ def clean_html(content):
     except Exception as e:
         logger.warning(f"Cleanup failed: {e}")
         return content
+
+
+@app.on_event("startup")
+async def startup_event():
+    _init_profile_pool()
 
 
 @app.get('/search')
@@ -257,6 +327,10 @@ async def _do_search(url: str) -> HTMLResponse | JSONResponse:
     start_perf = time.perf_counter()
     b = await get_browser()
     page = await b.get(new_tab=True)
+
+    logger.info(
+        f"Using profile {_active_profile_idx} ({_PROFILES[_active_profile_idx]})"
+    )
 
     try:
         import nodriver.cdp.network as network
@@ -314,7 +388,8 @@ async def _do_search(url: str) -> HTMLResponse | JSONResponse:
             return JSONResponse({"error": "navigation_failed"}, status_code=503)
 
         if is_bot_detected(page.url):
-            logger.error(f"BOT DETECTION on submission — sorry page: {page.url}")
+            logger.error(f"BOT DETECTION on submission — rotating profile")
+            await _rotate_profile()
             return JSONResponse({"error": "captcha"}, status_code=429)
 
         validated_url = page.url
@@ -346,7 +421,8 @@ async def _do_search(url: str) -> HTMLResponse | JSONResponse:
         if not detected:
             raw_check = await page.get_content()
             if is_bot_detected(page.url) or "sorry.google.com" in raw_check:
-                logger.error("BOT DETECTION on result polling — returning 429")
+                logger.error("BOT DETECTION on result polling — rotating profile")
+                await _rotate_profile()
                 return JSONResponse({"error": "captcha"}, status_code=429)
 
         if detected:
@@ -407,14 +483,8 @@ async def _do_search(url: str) -> HTMLResponse | JSONResponse:
     except Exception as e:
         logger.error(f"Proxy error: {e}")
         if isinstance(e, FATAL_BROWSER_ERRORS):
-            global browser
             logger.warning("Fatal browser error — resetting browser process")
-            if browser:
-                try:
-                    await browser.stop()
-                except Exception:
-                    pass
-            browser = None
+            await _reset_browser()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         try:
@@ -426,4 +496,10 @@ async def _do_search(url: str) -> HTMLResponse | JSONResponse:
 
 @app.get('/status')
 async def status():
-    return {'status': 'online', 'browser': browser is not None}
+    flagged = {i: _profile_flagged.get(i, False) for i in range(len(_PROFILES))}
+    return {
+        'status': 'online',
+        'browser': _browser is not None,
+        'active_profile': _active_profile_idx,
+        'profiles': flagged,
+    }

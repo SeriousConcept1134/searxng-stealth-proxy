@@ -6,8 +6,13 @@ services:
       - "127.0.0.1:5000:5000"
     environment:
       - PROXY_URL=${PROXY_URL:-}
+      - BRAVE_PROFILE_0=/data/brave_profile_0
+      - BRAVE_PROFILE_1=/data/brave_profile_1
+      - BRAVE_PROFILE_2=/data/brave_profile_2
     volumes:
-      - ./data/brave_profile:/data/brave_profile:z
+      - ./data/brave_profile_0:/data/brave_profile_0:z
+      - ./data/brave_profile_1:/data/brave_profile_1:z
+      - ./data/brave_profile_2:/data/brave_profile_2:z
       - ./proxy/app:/app/app:z
     profiles:
       - standard
@@ -20,7 +25,7 @@ services:
     container_name: searxng-warp
     restart: unless-stopped
     ports:
-      - "127.0.0.1:1080:9091" # Critical for host-side CAPTCHA solving
+      - "127.0.0.1:1080:9091"
     profiles:
       - warp
     networks:

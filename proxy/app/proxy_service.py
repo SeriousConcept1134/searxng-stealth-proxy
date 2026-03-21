@@ -24,6 +24,10 @@ FATAL_BROWSER_ERRORS = (ConnectionRefusedError, ProcessLookupError, BrokenPipeEr
 _TIMEZONE_FALLBACK = 'America/New_York'
 _WARMUP_MARKER = '.needs_warmup'
 
+# Search mode: 'direct' uses the raw Google URL, 'humanized' simulates
+# organic search via the Google homepage. Direct is the default.
+_SEARCH_MODE = os.environ.get('SEARCH_MODE', 'direct').lower()
+
 # Serialise requests to avoid concurrent Google hits from the same session
 _search_semaphore = asyncio.Semaphore(1)
 _last_request_time: float = 0.0
@@ -301,6 +305,7 @@ def clean_html(content):
 @app.on_event("startup")
 async def startup_event():
     _init_profile_pool()
+    logger.info(f"Search mode: {_SEARCH_MODE}")
     idle = int(os.environ.get('STARTUP_IDLE_SECONDS', '0'))
     if idle > 0:
         logger.info(f"Startup idle: waiting {idle}s before accepting requests")
@@ -366,7 +371,7 @@ async def _do_search(url: str) -> HTMLResponse | JSONResponse:
             mobile=False,
         ))
 
-        # --- HUMANIZED SEARCH FLOW ---
+        # --- SEARCH FLOW ---
         parsed_incoming = urlparse(url)
         params = parse_qs(parsed_incoming.query)
 
@@ -376,42 +381,42 @@ async def _do_search(url: str) -> HTMLResponse | JSONResponse:
         tbm_val = params.get('tbm', [''])[0]
         hl_val = params.get('hl', ['en'])[0]
 
-        if not query_text:
-            logger.warning(f"No query found in URL: {url}")
-            return JSONResponse({"error": "no_query"}, status_code=503)
+        if _SEARCH_MODE == 'humanized' and query_text:
+            entry_url = f"https://www.google.com/webhp?hl={hl_val}"
+            if tbm_val == 'vid':
+                entry_url += "&tbm=vid"
 
-        entry_url = f"https://www.google.com/webhp?hl={hl_val}"
-        if tbm_val == 'vid':
-            entry_url += "&tbm=vid"
+            logger.info(f"Humanizing search for: '{query_text}' (tbm={tbm_val})")
+            await page.get(entry_url)
 
-        logger.info(f"Humanizing search for: '{query_text}' (tbm={tbm_val})")
-        await page.get(entry_url)
+            search_input = await page.select('textarea[name="q"], input[name="q"]', timeout=5)
+            if not search_input:
+                logger.error("Could not find search input field — returning 503")
+                return JSONResponse({"error": "input_not_found"}, status_code=503)
 
-        search_input = await page.select('textarea[name="q"], input[name="q"]', timeout=5)
-        if not search_input:
-            logger.error("Could not find search input field — returning 503")
-            return JSONResponse({"error": "input_not_found"}, status_code=503)
+            navigated = await submit_search(page, search_input, query_text)
+            if not navigated:
+                logger.error("Search submission failed to trigger navigation — returning 503")
+                return JSONResponse({"error": "navigation_failed"}, status_code=503)
 
-        navigated = await submit_search(page, search_input, query_text)
-        if not navigated:
-            logger.error("Search submission failed to trigger navigation — returning 503")
-            return JSONResponse({"error": "navigation_failed"}, status_code=503)
+            if is_bot_detected(page.url):
+                logger.error(f"BOT DETECTION on submission — rotating profile")
+                await _rotate_profile()
+                return JSONResponse({"error": "captcha"}, status_code=429)
 
-        if is_bot_detected(page.url):
-            logger.error(f"BOT DETECTION on submission — rotating profile")
-            await _rotate_profile()
-            return JSONResponse({"error": "captcha"}, status_code=429)
+            validated_url = page.url
+            logger.info(f"Obtained validated URL: {validated_url}")
 
-        validated_url = page.url
-        logger.info(f"Obtained validated URL: {validated_url}")
+            final_url = inject_params(validated_url, start_val, safe_val)
+            if final_url != validated_url:
+                escaped = final_url.replace("'", "\\'")
+                await page.evaluate(f"history.replaceState(null, '', '{escaped}')")
+                logger.info(f"Injected params via replaceState: {final_url}")
+        else:
+            logger.info(f"Direct search for: '{query_text}' (tbm={tbm_val})")
+            await page.get(url)
 
-        final_url = inject_params(validated_url, start_val, safe_val)
-        if final_url != validated_url:
-            escaped = final_url.replace("'", "\\'")
-            await page.evaluate(f"history.replaceState(null, '', '{escaped}')")
-            logger.info(f"Injected params via replaceState: {final_url}")
-
-        # --- END HUMANIZED SEARCH FLOW ---
+        # --- END SEARCH FLOW ---
 
         detected = False
         selectors = ".MjjYud, #res, .islrc, .v7W49e, .ZIN69, .g, .Gx5Zad, .WVV5ke, .PmEWq"

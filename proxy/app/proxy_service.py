@@ -209,41 +209,37 @@ async def search(request: Request):
 
         if not query_text:
             logger.warning(f"No query found in URL: {url}")
-            await page.get(url)
-        else:
-            entry_url = f"https://www.google.com/webhp?hl={hl_val}"
-            if tbm_val == 'vid':
-                entry_url += "&tbm=vid"
+            return JSONResponse({"error": "no_query"}, status_code=503)
 
-            logger.info(f"Humanizing search for: '{query_text}' (tbm={tbm_val})")
-            await page.get(entry_url)
+        entry_url = f"https://www.google.com/webhp?hl={hl_val}"
+        if tbm_val == 'vid':
+            entry_url += "&tbm=vid"
 
-            search_input = await page.select('textarea[name="q"], input[name="q"]', timeout=5)
-            if not search_input:
-                logger.error("Could not find search input field!")
-                await page.get(url)
-            else:
-                navigated = await submit_search(page, search_input, query_text)
+        logger.info(f"Humanizing search for: '{query_text}' (tbm={tbm_val})")
+        await page.get(entry_url)
 
-                if not navigated:
-                    logger.error("Search submission failed to trigger navigation, falling back to direct URL")
-                    await page.get(url)
-                else:
-                    if is_bot_detected(page.url):
-                        logger.error(f"BOT DETECTION on submission — sorry page: {page.url}")
-                        return JSONResponse({"error": "captcha"}, status_code=429)
+        search_input = await page.select('textarea[name="q"], input[name="q"]', timeout=5)
+        if not search_input:
+            logger.error("Could not find search input field — returning 503")
+            return JSONResponse({"error": "input_not_found"}, status_code=503)
 
-                    validated_url = page.url
-                    logger.info(f"Obtained validated URL: {validated_url}")
+        navigated = await submit_search(page, search_input, query_text)
+        if not navigated:
+            logger.error("Search submission failed to trigger navigation — returning 503")
+            return JSONResponse({"error": "navigation_failed"}, status_code=503)
 
-                    # Inject start/safe via history.replaceState — no network request
-                    final_url = inject_params(validated_url, start_val, safe_val)
-                    if final_url != validated_url:
-                        escaped = final_url.replace("'", "\\'")
-                        await page.evaluate(
-                            f"history.replaceState(null, '', '{escaped}')"
-                        )
-                        logger.info(f"Injected params via replaceState: {final_url}")
+        if is_bot_detected(page.url):
+            logger.error(f"BOT DETECTION on submission — sorry page: {page.url}")
+            return JSONResponse({"error": "captcha"}, status_code=429)
+
+        validated_url = page.url
+        logger.info(f"Obtained validated URL: {validated_url}")
+
+        final_url = inject_params(validated_url, start_val, safe_val)
+        if final_url != validated_url:
+            escaped = final_url.replace("'", "\\'")
+            await page.evaluate(f"history.replaceState(null, '', '{escaped}')")
+            logger.info(f"Injected params via replaceState: {final_url}")
 
         # --- END HUMANIZED SEARCH FLOW ---
 

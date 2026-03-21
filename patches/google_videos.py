@@ -81,6 +81,11 @@ def get_google_info(params: "OnlineParams", eng_traits: EngineTraits) -> dict[st
     return ret_val
 
 def detect_google_sorry(resp):
+
+    if resp.status_code == 429:
+        raise SearxEngineCaptchaException()
+    if resp.status_code == 503:
+        raise SearxEngineAccessDeniedException()
     if resp.url.host == "sorry.google.com" or resp.url.path.startswith("/sorry"):
         raise SearxEngineCaptchaException()
 
@@ -116,6 +121,11 @@ def parse_data_images(text: str):
 
 def response(resp: "SXNG_Response"):
     detect_google_sorry(resp)
+
+    if resp.status_code == 429:
+        raise SearxEngineCaptchaException()
+    if resp.status_code == 503:
+        raise SearxEngineAccessDeniedException()
     data_image_map = parse_data_images(resp.text)
     results = EngineResults()
     dom = html.fromstring(resp.text)

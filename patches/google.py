@@ -12,7 +12,7 @@ import babel.languages
 from lxml import html
 from searx import logger
 from searx.enginelib.traits import EngineTraits
-from searx.exceptions import SearxEngineCaptchaException
+from searx.exceptions import SearxEngineCaptchaException, SearxEngineAccessDeniedException
 from searx.result_types import EngineResults
 from searx.locales import get_official_locales, language_tag, region_tag
 from searx.utils import (
@@ -92,7 +92,7 @@ def request(query: str, params: "OnlineParams") -> None:
     google_url = f"https://www.google.com/search?q={urlencode({'q': query})[2:]}&hl={hl}&safe={safe}"
     if start > 0:
         google_url += f"&start={start}"
-    
+
     # 2. Wrap it for sxng-proxy
     proxy_url = "http://sxng-proxy:5000/search"
     params["url"] = proxy_url + "?" + urlencode({
@@ -116,6 +116,12 @@ def parse_data_images(text: str):
 
 def response(resp: "SXNG_Response"):
     detect_google_sorry(resp)
+
+    if resp.status_code == 429:
+        raise SearxEngineCaptchaException()
+    if resp.status_code == 503:
+        raise SearxEngineAccessDeniedException()
+
     data_image_map = parse_data_images(resp.text)
     results = EngineResults()
     dom = html.fromstring(resp.text)
@@ -135,7 +141,7 @@ def response(resp: "SXNG_Response"):
                 url = unquote(raw_url[7:].split("&sa=U")[0])
             else:
                 url = raw_url
-            
+
             if not url.startswith('http') and '://' not in url:
                 if url.startswith('/'):
                     url = 'https://www.google.com' + url
@@ -149,7 +155,7 @@ def response(resp: "SXNG_Response"):
             content = extract_text(content_nodes)
 
             thumbnail = None
-            
+
             # YouTube Reconstruction
             yt_id_match = re.search(r'(?:v=|\/live\/|embed\/|youtu\.be\/)([0-9A-Za-z_-]{11})', url)
             if yt_id_match:
@@ -169,14 +175,14 @@ def response(resp: "SXNG_Response"):
                 for img in result.xpath('.//img'):
                     if img.get('class') == 'XNo5Ab' or img.xpath('ancestor::div[contains(@class, "VuuXrf") or contains(@class, "favicon")]'):
                         continue
-                    
+
                     img_id = img.get('id')
                     src = img.get('data-src') or img.get('src') or ''
                     candidate = data_image_map.get(img_id) or src
-                    
+
                     if candidate:
                         if candidate.startswith('data:image'):
-                            if len(candidate) > 3000: # Threshold for high-res
+                            if len(candidate) > 3000:
                                 thumbnail = candidate
                                 break
                         elif 'gstatic.com/images?q=tbn' not in candidate and 'favicon' not in candidate.lower():
@@ -189,19 +195,19 @@ def response(resp: "SXNG_Response"):
                     thumbnail = None
 
             res = {"url": url, "title": title, "content": content or '', "thumbnail": thumbnail}
-            
+
             # Strictly Video Template (No Reels)
             is_video = False
             video_match = re.search(r'youtube\.com/(?:watch|live)|youtu\.be/|vimeo\.com/\d+|dailymotion\.com/video/', url)
             if video_match and thumbnail:
                 is_video = True
-            
+
             if is_video:
                 res['template'] = 'videos.html'
                 yt_id_match = re.search(r'v=([^&]+)', url)
                 if yt_id_match:
                     res['iframe_src'] = f'https://www.youtube-nocookie.com/embed/{yt_id_match.group(1)}'
-            
+
             results.append(res)
         except Exception:
             continue

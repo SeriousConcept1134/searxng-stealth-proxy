@@ -45,6 +45,26 @@ def is_bot_detected(url: str) -> bool:
     return "/sorry/" in url or "sorry.google.com" in url
 
 
+async def move_to_element(page, element) -> None:
+    """Simulate cursor movement toward the element before clicking.
+
+    Dispatches a mouseover and mousemove event on the element via CDP
+    to produce a more natural interaction pattern before focus.
+    """
+    try:
+        await page.evaluate("""
+            (function() {
+                const el = document.querySelector('textarea[name="q"], input[name="q"]');
+                if (!el) return;
+                el.dispatchEvent(new MouseEvent('mouseover', {bubbles: true, cancelable: true}));
+                el.dispatchEvent(new MouseEvent('mousemove', {bubbles: true, cancelable: true}));
+            })()
+        """)
+        await asyncio.sleep(random.uniform(0.1, 0.3))
+    except Exception:
+        pass
+
+
 async def type_humanlike(page, text: str) -> None:
     """Type text character by character via CDP key events.
 
@@ -63,11 +83,13 @@ async def type_humanlike(page, text: str) -> None:
 
 
 async def submit_search(page, search_input, query_text: str) -> bool:
-    """Focus the search input, type the query, and submit the form.
+    """Simulate cursor movement, focus the input, type the query, and submit.
 
-    Tries Enter key first, falls back to JS form submit if navigation
-    does not occur within the expected window.
+    Moves the cursor to the element before clicking to produce a natural
+    interaction pattern. Tries Enter key first, falls back to JS form
+    submit if navigation does not occur within the expected window.
     """
+    await move_to_element(page, search_input)
     await search_input.click()
     await asyncio.sleep(random.uniform(0.2, 0.5))
 

@@ -139,7 +139,7 @@ async def search(request: Request):
                 await search_input.send_keys(query_text)
                 await asyncio.sleep(0.2)
                 await page.send(uc.cdp.input_.dispatch_key_event(
-                    type='keyDown', windows_virtual_key_code=13, native_virtual_key_code=13
+                    type_='keyDown', windows_virtual_key_code=13, native_virtual_key_code=13
                 ))
 
                 for _ in range(30):

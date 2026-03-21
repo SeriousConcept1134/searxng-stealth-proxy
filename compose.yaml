@@ -23,11 +23,17 @@ services:
       - searxng-net
 
   searxng-warp:
-    image: docker.io/caas/warp-socks:latest
+    image: ghcr.io/mon-ius/docker-warp-socks:v5
     container_name: searxng-warp
     restart: unless-stopped
     ports:
       - "127.0.0.1:1080:9091"
+    healthcheck:
+      test: ["CMD", "curl", "-x", "socks5h://localhost:9091", "https://cloudflare.com/cdn-cgi/trace"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     profiles:
       - warp
     networks:

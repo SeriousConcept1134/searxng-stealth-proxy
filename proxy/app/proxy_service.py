@@ -137,10 +137,19 @@ async def search(request: Request):
     page = await b.get(new_tab=True)
 
     try:
-        target_ua = load_ua()
-
         import nodriver.cdp.network as network
-        await page.send(network.set_user_agent_override(user_agent=target_ua))
+
+        target_ua = load_ua()
+        await page.send(network.set_user_agent_override(
+            user_agent=target_ua,
+            accept_language="en-US,en;q=0.9",
+            platform="Linux",
+        ))
+        await page.send(network.set_extra_http_headers(headers=network.Headers({
+            "Sec-CH-UA": '"Chromium";v="146", "Brave";v="146", "Not/A)Brand";v="99"',
+            "Sec-CH-UA-Mobile": "?0",
+            "Sec-CH-UA-Platform": '"Linux"',
+        })))
 
         # --- HUMANIZED SEARCH FLOW ---
         from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
@@ -179,7 +188,6 @@ async def search(request: Request):
                     logger.error("Search submission failed to trigger navigation, falling back to direct URL")
                     await page.get(url)
                 else:
-                    # Early bot detection: catch /sorry/ redirects before proceeding
                     if is_bot_detected(page.url):
                         logger.error(f"BOT DETECTION on submission — sorry page: {page.url}")
                         return JSONResponse({"error": "captcha"}, status_code=429)

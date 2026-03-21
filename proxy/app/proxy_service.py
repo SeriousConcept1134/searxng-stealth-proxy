@@ -39,14 +39,35 @@ def is_bot_detected(url: str) -> bool:
     return "/sorry/" in url or "sorry.google.com" in url
 
 
-async def submit_search(page, search_input) -> bool:
-    """Submit the search form and wait for navigation to results.
+async def type_humanlike(page, text: str) -> None:
+    """Type text character by character via CDP key events.
+
+    Produces isTrusted: true keyboard events at the browser input stack
+    level, which synthetic JS dispatch cannot replicate.
+    """
+    for char in text:
+        await page.send(uc.cdp.input_.dispatch_key_event(
+            type_='keyDown', text=char
+        ))
+        await asyncio.sleep(random.uniform(0.04, 0.16))
+        await page.send(uc.cdp.input_.dispatch_key_event(
+            type_='keyUp', text=char
+        ))
+        await asyncio.sleep(random.uniform(0.02, 0.08))
+
+
+async def submit_search(page, search_input, query_text: str) -> bool:
+    """Focus the search input, type the query, and submit the form.
 
     Tries Enter key first, falls back to JS form submit if navigation
     does not occur within the expected window.
     """
     await search_input.click()
+    await asyncio.sleep(random.uniform(0.2, 0.5))
+
+    await type_humanlike(page, query_text)
     await asyncio.sleep(0.1)
+
     await page.send(uc.cdp.input_.dispatch_key_event(
         type_='keyDown', windows_virtual_key_code=13, native_virtual_key_code=13
     ))
@@ -179,10 +200,7 @@ async def search(request: Request):
                 logger.error("Could not find search input field!")
                 await page.get(url)
             else:
-                await search_input.send_keys(query_text)
-                await asyncio.sleep(0.2)
-
-                navigated = await submit_search(page, search_input)
+                navigated = await submit_search(page, search_input, query_text)
 
                 if not navigated:
                     logger.error("Search submission failed to trigger navigation, falling back to direct URL")

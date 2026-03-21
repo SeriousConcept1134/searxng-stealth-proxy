@@ -3,12 +3,16 @@
 This project provides a standalone browser-based stealth proxy to restore **Google** and **Google Videos** functionality in any existing SearXNG instance.
 
 ## 🚀 Features
-- **Bypass 403/429 Blocks**: Uses `nodriver` (Brave/Chrome) to simulate organic user behavior.
+
+- **Bypass 403/429 Blocks**: Uses `nodriver` (Brave/Chrome) with full CDP fingerprint hardening to avoid bot detection.
+- **Multi-Profile Rotation**: Maintains a pool of 3 warmed browser profiles with automatic failover on CAPTCHA detection.
+- **Configurable Search Mode**: Switch between fast direct URL navigation and a full humanized search simulation.
 - **High-Fidelity Metadata**: Restores views, dates, and author information for Google Videos.
 - **IP Rotation (Optional)**: Includes a Cloudflare WARP profile for IP cleanliness.
 - **Surgical Patching**: Easy integration via Docker Volume Overlays.
 
 ## 📋 Prerequisites
+
 - Docker or Podman
 - Python 3.x
 - **Chromium-based Browser** installed on the host (Brave, Google Chrome, Microsoft Edge, Vivaldi, etc.) for manual CAPTCHA solving.
@@ -16,36 +20,54 @@ This project provides a standalone browser-based stealth proxy to restore **Goog
 ## 🛠️ Setup Instructions
 
 ### 1. Configure the Proxy
+
 Clone this repo and copy the example environment file:
+
 ```bash
 cp .env.example .env
 ```
 
 Find your existing SearXNG network name so the proxy can "plug in" to it:
+
 - **Docker**: `docker network ls`
 - **Podman**: `podman network ls`
 
-> **Note**: Compose usually prefixes network names with your folder name (e.g. `searxng_searxng-net`). Use the **full name** as it appears in the `NAME` column of the command output.
+> **Note**: Compose usually prefixes network names with your folder name (e.g. `searxng-docker_searxng-net`). Use the **full name** as it appears in the `NAME` column of the command output.
 
 Edit the `.env` file and set `EXTERNAL_NETWORK` to that full name.
 
-### 2. Start the Proxy Container
+### 2. Create Profile Directories
+
+The proxy uses a pool of 3 browser profiles. Create the directories before starting:
+
+```bash
+mkdir -p data/brave_profile_0 data/brave_profile_1 data/brave_profile_2
+```
+
+### 3. Start the Proxy Container
+
 Choose the path that matches your current setup (use `podman-compose` if on Podman):
 
 #### Path A: No Proxy (Direct Connection)
+
 Use this if you don't want to use a VPN/Warp and will use your home/server IP.
+
 - Edit `.env`: Set `PROXY_URL=` (leave empty).
 - Run: `docker-compose --profile standard up -d`
 
 #### Path B: New Warp Setup (Starting from scratch)
+
 Use this if you want to set up a fresh Warp proxy along with the stealth proxy.
+
 - Edit `.env`:
   - `PROXY_URL=socks5://searxng-warp:1080`
   - `HOST_PROXY_URL=socks5://127.0.0.1:1080`
 - Run: `docker-compose --profile warp up -d`
 
 #### Path C: Existing Warp/Proxy (Integration)
+
 Use this if you already have a Warp container (like `docker-warp-socks`) running in your SearXNG stack.
+
 - **Requirement**: Your existing Warp container **must** expose its SOCKS5 port to your host (e.g., `-p 127.0.0.1:1080:9091`).
 - Edit `.env`:
   - `EXTERNAL_NETWORK`: Set to your existing SearXNG network name.
@@ -53,29 +75,38 @@ Use this if you already have a Warp container (like `docker-warp-socks`) running
   - `HOST_PROXY_URL`: Set to your local host IP/port (e.g., `socks5://127.0.0.1:1080`).
 - Run: `docker-compose --profile standard up -d`
 
-### 3. Profile Warming (CAPTCHA Solving)
-This step is **MANDATORY** to prevent Google from blocking the container immediately.
+### 4. Profile Warming (CAPTCHA Solving)
+
+This step is **MANDATORY** before the proxy can serve requests. Each profile in the pool must be warmed independently.
 
 #### **Linux Setup:**
+
 ```bash
 ./scripts/setup.sh
 ./venv/bin/python scripts/manage.py
 ```
 
 #### **Windows Setup:**
+
 ```powershell
 .\scripts\setup.ps1
 .\venv\Scripts\python.exe scripts\manage.py
 ```
 
-- The script will intelligently scan your system for installed Chromium browsers (Brave, Chrome, Edge, Vivaldi, etc.).
-- If multiple browsers are found, you will be prompted to choose which one to use.
-- A browser window will open on your host machine.
-- **Note**: If you are using Warp, the browser will automatically use the Warp IP via the `HOST_PROXY_URL` you configured.
-- Solve any CAPTCHAs, then **close the browser window**.
-- The script will automatically clear locks and restart the proxy container for you.
+The warmup script will:
 
-### 4. Integrate with SearXNG
+- Auto-detect installed Chromium browsers on your system (prompting if multiple are found).
+- Determine which profiles need warmup by checking for `.needs_warmup` marker files.
+- If profiles are flagged (CAPTCHA-triggered), proceed directly to the CAPTCHA prompt for each.
+- If no profiles are flagged, prompt you to select which profile to warm up.
+- For fresh profile setups, automatically run **6 seed queries** across Google Search, Google News, Google Maps, and Google Video to build session history before handing off to you.
+- Open a browser window on your host — solve any CAPTCHAs presented, then close the window.
+- Automatically clear locks and restart the proxy container.
+
+**Warm all 3 profiles** before relying on the rotation pool. Re-run the script for each profile index (0, 1, 2).
+
+### 5. Integrate with SearXNG
+
 Modify your SearXNG `docker-compose.yaml` to mount the patches over the core files:
 
 ```yaml
@@ -83,7 +114,6 @@ services:
   searxng:
     # ... existing config ...
     volumes:
-      # Mount the patches
       - ./patches/google.py:/usr/local/searxng/searx/engines/google.py:ro
       - ./patches/google_videos.py:/usr/local/searxng/searx/engines/google_videos.py:ro
       - ./patches/client.py:/usr/local/searxng/searx/network/client.py:ro
@@ -91,7 +121,8 @@ services:
 ```
 
 #### 🛠️ Force Recompilation (Required)
-SearXNG images often ship with pre-compiled bytecode that will ignore your mounted `.py` files. **You must run this command** after your first install and after every image update to force SearXNG to use the patches:
+
+SearXNG images often ship with pre-compiled bytecode that will ignore your mounted `.py` files. **You must run this command** after your first install and after every image update:
 
 ```bash
 # For Docker (replace 'docker' with 'podman' if needed)
@@ -105,43 +136,107 @@ docker exec searxng sh -c "
 ```
 
 #### Significance of the Patches:
-- **`google.py`**: Redirects all standard Google searches to the `sxng-proxy` container and updates the XPaths to match the modern desktop layout returned by the browser.
-- **`google_videos.py`**: Implements the **Nest Hub UA** strategy. This triggers a specific legacy layout in Google that allows for the extraction of rich metadata (Views, Author, Duration) without complex JS execution. It also constructs high-resolution YouTube thumbnails.
-- **`client.py`**: Critically modifies SearXNG's network layer. It whitelists the local proxy container to allow persistent HTTP connections. Without this, SearXNG's security layer would drop the connection to the proxy, leading to 500 errors.
+
+- **`google.py`**: Redirects all standard Google searches to the `sxng-proxy` container. Handles 429 (CAPTCHA) and 503 (flow failure) responses from the proxy with appropriate SearXNG exceptions.
+- **`google_videos.py`**: Same proxy integration as `google.py`, applied to the video search engine.
+- **`client.py`**: Modifies SearXNG's network layer to whitelist the local proxy container for persistent HTTP connections.
+- **`gsa_useragents.txt`**: Contains the User-Agent string used by the proxy browser — a native Brave/Chromium UA matching the actual engine.
 
 Update your `settings.yml` with the proxy details from the `patches/settings.yml.example` provided.
 
+## ⚙️ Configuration
+
+All configuration is via `.env`. See `.env.example` for the full reference. Key variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `EXTERNAL_NETWORK` | `searxng-net` | Docker/Podman network shared with SearXNG |
+| `PROXY_URL` | _(empty)_ | SOCKS5 proxy URL for the container (e.g. WARP) |
+| `HOST_PROXY_URL` | _(empty)_ | SOCKS5 proxy URL accessible from the host (for warmup) |
+| `SEARCH_MODE` | `direct` | `direct` for fast URL navigation, `humanized` for homepage simulation |
+| `STARTUP_IDLE_SECONDS` | `0` | Seconds to wait after startup before accepting requests |
+| `BROWSER_PATH` | _(auto-detect)_ | Override the browser binary used by the warmup script |
+
+### Search Mode
+
+The proxy supports two search modes, switchable via `SEARCH_MODE` in `.env`:
+
+- **`direct`** (default) — navigates straight to the Google search URL. Fast (~2–3s), recommended for normal use. All CDP fingerprint hardening still applies.
+- **`humanized`** — simulates organic search by navigating to the Google homepage, typing the query, and submitting the form. Slower (~8–12s) but mimics human browsing more closely. Use if direct mode triggers frequent CAPTCHAs.
+
+### Post-Warmup Idle Delay
+
+After a CAPTCHA-triggered re-warm, set `STARTUP_IDLE_SECONDS=600` in `.env` before restarting the container. This gives the freshly activated cookie session 10 minutes to age before automated queries hit it. Reset to `0` for normal restarts.
+
 ## 🧠 Technical Architecture
 
-This proxy is designed to be a "Stealth Sidecar." Here is how it works under the hood:
-
 ### 1. X11 Virtual Display (Xvfb)
-Even when running in "headless" mode, modern browsers and bot-detection scripts often behave differently if no display is detected. 
-- The container runs **Xvfb** (X Virtual Framebuffer) to create a virtual screen (Display `:99`).
-- This ensures that Chromium/Brave has a valid rendering target, which helps in bypassing certain "headless-detection" fingerprints and ensures stability for automation.
 
-### 2. Stealth via `nodriver`
-The proxy uses the `nodriver` library, which communicates directly with the browser via the Chrome DevTools Protocol (CDP). 
-- It avoids using Selenium's `webdriver` flags, which are easily detected by Google.
-- It manages execution timing and event handling to simulate human-like interaction.
+The container runs **Xvfb** (X Virtual Framebuffer) at `1920x1080` to provide a valid rendering target for Brave, avoiding headless-detection signals that fire when no display is present.
 
-### 3. "Warm Start" Profile Mirroring
-To ensure high availability and prevent data corruption:
-- Your "Master Profile" (containing the CAPTCHA session) is stored at `/data/brave_profile`.
-- On startup, the container **mirrors** this profile to a temporary working directory in `/tmp`.
-- This prevents the dreaded `SingletonLock` errors (which happen if a browser process crashes) and ensures that the container remains stateless and disposable.
+### 2. Fingerprint Hardening via CDP
 
-### 4. Surgical Patching vs. Image Rebuilding
-Instead of forcing users to maintain a custom SearXNG image, we use **Volume Overlays**. 
-- The `.py` files in `/patches` are mounted directly over the ones inside the standard SearXNG container.
-- This allows you to update SearXNG normally while keeping the proxy integration intact.
+The proxy applies a comprehensive set of CDP overrides per browser tab to present a consistent, non-automated fingerprint:
+
+- **Native Brave/Chromium UA** matching the actual browser engine version (no UA/engine mismatch)
+- **`Sec-CH-UA` client hint headers** normalized to match the UA string
+- **`navigator.webdriver`** removed; `plugins` and `languages` normalized
+- **Timezone** auto-detected from the WARP egress IP via `ip-api.com` at browser startup
+- **Viewport** enforced via `Emulation.setDeviceMetricsOverride` at `1920x1080`
+- **Request serialization** via `asyncio.Semaphore` with 3.5–6s randomized inter-request jitter
+
+### 3. Multi-Profile Rotation Pool
+
+The proxy maintains a pool of 3 browser profiles (`brave_profile_0`, `brave_profile_1`, `brave_profile_2`):
+
+- On CAPTCHA detection, the active profile is **flagged** and a `.needs_warmup` marker file is written into its directory.
+- The proxy automatically **rotates** to the next healthy profile without downtime.
+- The `/status` endpoint exposes pool state including which profiles are flagged.
+- The warmup script reads marker files to determine which profiles need attention.
+
+### 4. Profile Persistence
+
+Profile data is volume-mounted directly at `/data/brave_profile_0/1/2` and used in-place — no tmp copy is made. Session data (cookies, trust history) **accumulates and persists across container restarts**, which is important for maintaining Google's session trust score.
+
+### 5. Surgical Patching vs. Image Rebuilding
+
+The `.py` files in `/patches` are mounted directly over the standard SearXNG container files via Docker volume overlays. This allows you to update SearXNG normally while keeping the proxy integration intact.
 
 ## 🔄 Maintenance
-If you start seeing "403" or "Captcha" results in SearXNG, simply run:
+
+If you see "403", "Captcha", or 0-result responses in SearXNG, the proxy has detected a bot challenge and rotated to the next profile. Check the proxy logs:
+
+```bash
+podman logs sxng-proxy --tail 50
+```
+
+Look for `Profile X flagged — re-warm required`. Then run the warmup script — it will automatically identify which profiles need attention:
+
 ```bash
 # Linux
 ./venv/bin/python scripts/manage.py
+
 # Windows
 .\venv\Scripts\python.exe scripts\manage.py
 ```
-Solve the challenge, close the browser, and you are back online!
+
+The script will queue all flagged profiles, warm each one in sequence (skipping seed queries since the session is already blocked), and restart the proxy when done.
+
+## 📊 Status Endpoint
+
+The proxy exposes a `/status` endpoint at `http://localhost:5000/status`:
+
+```json
+{
+  "status": "online",
+  "browser": true,
+  "active_profile": 0,
+  "profiles": {
+    "0": false,
+    "1": false,
+    "2": true
+  }
+}
+```
+
+`true` in the profiles map indicates that profile is flagged and needs re-warming.

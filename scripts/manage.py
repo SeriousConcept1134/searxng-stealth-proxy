@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 import asyncio
+import random
 import shutil
 import nodriver as uc
 
@@ -140,8 +141,16 @@ def select_browser(browser_path_override: str | None = None) -> str:
         return browsers[0]["path"]
 
 
-async def run_warmup(profile: dict, browser_path: str, proxy: str, ua: str) -> None:
-    """Run the full warmup sequence for a single profile."""
+async def run_warmup(profile: dict, browser_path: str, proxy: str, ua: str,
+                     is_recovery: bool = False) -> None:
+    """Run the full warmup sequence for a single profile.
+
+    When is_recovery is True (profile was CAPTCHA-flagged), seed queries
+    are skipped and the user is taken straight to the CAPTCHA prompt,
+    since the blocked session will reject all requests anyway.
+    When is_recovery is False (fresh profile setup), seed queries run
+    first to build session history before handing off to the user.
+    """
     profile_path = profile["path"]
     idx = profile["index"]
 
@@ -193,6 +202,27 @@ async def run_warmup(profile: dict, browser_path: str, proxy: str, ua: str) -> N
             await asyncio.sleep(2)
         except Exception:
             pass
+
+        if is_recovery:
+            print("[*] Recovery warmup — skipping seed queries, proceeding to CAPTCHA prompt.")
+        else:
+            print("[*] Running seed queries to build session history...")
+            seed_queries = [
+                "https://www.google.com/search?q=weather+forecast+this+week",
+                "https://www.google.com/search?q=best+pasta+carbonara+recipe",
+                "https://news.google.com",
+                "https://www.google.com/search?q=how+to+learn+guitar",
+                "https://www.google.com/search?q=funny+cats&tbm=vid",
+            ]
+            for i, seed_url in enumerate(seed_queries, 1):
+                try:
+                    print(f"[*] Seed query {i}/{len(seed_queries)}: {seed_url}")
+                    await browser.get(seed_url)
+                    await asyncio.sleep(random.uniform(3.0, 6.0))
+                    await browser.evaluate("window.scrollBy(0, 350)")
+                    await asyncio.sleep(random.uniform(1.5, 3.0))
+                except Exception:
+                    pass
 
         print('\n[!] ACTION REQUIRED:')
         print('[!] Solve any CAPTCHAs in the browser window.')
@@ -265,7 +295,7 @@ async def main():
 
         while queue:
             profile = queue.pop(0)
-            await run_warmup(profile, browser_path, proxy, ua)
+            await run_warmup(profile, browser_path, proxy, ua, is_recovery=True)
 
             if queue:
                 print(f"\n[*] {len(queue)} profile(s) still need warmup: "

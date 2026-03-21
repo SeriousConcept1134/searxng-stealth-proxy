@@ -211,6 +211,7 @@ async def run_warmup(profile: dict, browser_path: str, proxy: str, ua: str,
                 "https://www.google.com/search?q=weather+forecast+this+week",
                 "https://www.google.com/search?q=best+pasta+carbonara+recipe",
                 "https://news.google.com",
+                "https://www.google.com/maps",
                 "https://www.google.com/search?q=how+to+learn+guitar",
                 "https://www.google.com/search?q=funny+cats&tbm=vid",
             ]

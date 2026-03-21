@@ -23,6 +23,12 @@ DEFAULT_UA = (
 )
 FATAL_BROWSER_ERRORS = (ConnectionRefusedError, ProcessLookupError, BrokenPipeError)
 
+# Serialise requests to avoid concurrent Google hits from the same session
+_search_semaphore = asyncio.Semaphore(1)
+_last_request_time: float = 0.0
+_MIN_REQUEST_GAP = 3.5   # seconds — minimum gap between consecutive requests
+_MAX_REQUEST_JITTER = 2.5  # seconds — additional random jitter on top of the minimum
+
 
 def load_ua() -> str:
     try:
@@ -172,11 +178,26 @@ def clean_html(content):
 
 @app.get('/search')
 async def search(request: Request):
-    url = request.query_params.get('url')
+    global _last_request_time
 
+    url = request.query_params.get('url')
     if not url:
         raise HTTPException(status_code=400, detail="Missing url parameter")
 
+    async with _search_semaphore:
+        # Enforce minimum inter-request gap with jitter
+        elapsed = time.monotonic() - _last_request_time
+        gap = _MIN_REQUEST_GAP + random.uniform(0, _MAX_REQUEST_JITTER)
+        if elapsed < gap:
+            wait = gap - elapsed
+            logger.info(f"Rate limiting: waiting {wait:.2f}s before next request")
+            await asyncio.sleep(wait)
+        _last_request_time = time.monotonic()
+
+        return await _do_search(url)
+
+
+async def _do_search(url: str) -> HTMLResponse | JSONResponse:
     start_perf = time.perf_counter()
     b = await get_browser()
     page = await b.get(new_tab=True)

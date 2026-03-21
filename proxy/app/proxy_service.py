@@ -359,6 +359,12 @@ async def _do_search(url: str) -> HTMLResponse | JSONResponse:
         await page.send(emulation.set_timezone_override(
             timezone_id=_egress_timezone
         ))
+        await page.send(emulation.set_device_metrics_override(
+            width=1920,
+            height=1080,
+            device_scale_factor=1,
+            mobile=False,
+        ))
 
         # --- HUMANIZED SEARCH FLOW ---
         parsed_incoming = urlparse(url)

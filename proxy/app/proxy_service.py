@@ -89,6 +89,30 @@ async def submit_search(page, search_input, query_text: str) -> bool:
     return False
 
 
+def inject_params(validated_url: str, start_val: str, safe_val: str) -> str:
+    """Append missing start and safe params to the validated URL string.
+
+    Returns the URL unchanged if no injection is needed.
+    """
+    from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+    parsed = urlparse(validated_url)
+    params = parse_qs(parsed.query)
+
+    changed = False
+    if start_val != '0' and params.get('start', ['0'])[0] != start_val:
+        params['start'] = [start_val]
+        changed = True
+    if safe_val and params.get('safe', [''])[0] != safe_val:
+        params['safe'] = [safe_val]
+        changed = True
+
+    if not changed:
+        return validated_url
+
+    return urlunparse(parsed._replace(query=urlencode(params, doseq=True)))
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     logger.error(f"VALIDATION ERROR: {exc.errors()}")
@@ -159,6 +183,7 @@ async def search(request: Request):
 
     try:
         import nodriver.cdp.network as network
+        from urllib.parse import urlparse, parse_qs
 
         target_ua = load_ua()
         await page.send(network.set_user_agent_override(
@@ -173,8 +198,6 @@ async def search(request: Request):
         })))
 
         # --- HUMANIZED SEARCH FLOW ---
-        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-
         parsed_incoming = urlparse(url)
         params = parse_qs(parsed_incoming.query)
 
@@ -213,24 +236,14 @@ async def search(request: Request):
                     validated_url = page.url
                     logger.info(f"Obtained validated URL: {validated_url}")
 
-                    v_parsed = urlparse(validated_url)
-                    v_params = parse_qs(v_parsed.query)
-
-                    needs_reload = False
-                    if start_val != '0' and v_params.get('start', [''])[0] != start_val:
-                        v_params['start'] = [start_val]
-                        needs_reload = True
-                    if safe_val and v_params.get('safe', [''])[0] != safe_val:
-                        v_params['safe'] = [safe_val]
-                        needs_reload = True
-
-                    if needs_reload:
-                        final_query = urlencode(v_params, doseq=True)
-                        final_url = urlunparse(v_parsed._replace(query=final_query))
-                        logger.info(f"Re-injecting parameters: {final_url}")
-                        await page.get(final_url)
-                    else:
-                        logger.info("Validated URL is already correct.")
+                    # Inject start/safe via history.replaceState — no network request
+                    final_url = inject_params(validated_url, start_val, safe_val)
+                    if final_url != validated_url:
+                        escaped = final_url.replace("'", "\\'")
+                        await page.evaluate(
+                            f"history.replaceState(null, '', '{escaped}')"
+                        )
+                        logger.info(f"Injected params via replaceState: {final_url}")
 
         # --- END HUMANIZED SEARCH FLOW ---
 

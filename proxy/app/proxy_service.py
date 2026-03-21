@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 import nodriver as uc
@@ -21,6 +21,7 @@ DEFAULT_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/146.0.7680.153 Safari/537.36"
 )
+FATAL_BROWSER_ERRORS = (ConnectionRefusedError, ProcessLookupError, BrokenPipeError)
 
 
 def load_ua() -> str:
@@ -32,6 +33,39 @@ def load_ua() -> str:
     except Exception:
         pass
     return DEFAULT_UA
+
+
+def is_bot_detected(url: str) -> bool:
+    return "/sorry/" in url or "sorry.google.com" in url
+
+
+async def submit_search(page, search_input) -> bool:
+    """Submit the search form and wait for navigation to results.
+
+    Tries Enter key first, falls back to JS form submit if navigation
+    does not occur within the expected window.
+    """
+    await search_input.click()
+    await asyncio.sleep(0.1)
+    await page.send(uc.cdp.input_.dispatch_key_event(
+        type_='keyDown', windows_virtual_key_code=13, native_virtual_key_code=13
+    ))
+
+    for _ in range(30):
+        await asyncio.sleep(0.2)
+        if "/search" in page.url and "q=" in page.url:
+            return True
+
+    logger.warning("Enter key did not trigger navigation, trying form submit fallback")
+    await page.evaluate(
+        "document.querySelector('form[action=\"/search\"]')?.submit()"
+    )
+    for _ in range(20):
+        await asyncio.sleep(0.2)
+        if "/search" in page.url and "q=" in page.url:
+            return True
+
+    return False
 
 
 @app.exception_handler(RequestValidationError)
@@ -138,36 +172,39 @@ async def search(request: Request):
             else:
                 await search_input.send_keys(query_text)
                 await asyncio.sleep(0.2)
-                await page.send(uc.cdp.input_.dispatch_key_event(
-                    type_='keyDown', windows_virtual_key_code=13, native_virtual_key_code=13
-                ))
 
-                for _ in range(30):
-                    await asyncio.sleep(0.2)
-                    if "/search" in page.url and "q=" in page.url:
-                        break
+                navigated = await submit_search(page, search_input)
 
-                validated_url = page.url
-                logger.info(f"Obtained validated URL: {validated_url}")
-
-                v_parsed = urlparse(validated_url)
-                v_params = parse_qs(v_parsed.query)
-
-                needs_reload = False
-                if start_val != '0' and v_params.get('start', [''])[0] != start_val:
-                    v_params['start'] = [start_val]
-                    needs_reload = True
-                if safe_val and v_params.get('safe', [''])[0] != safe_val:
-                    v_params['safe'] = [safe_val]
-                    needs_reload = True
-
-                if needs_reload:
-                    final_query = urlencode(v_params, doseq=True)
-                    final_url = urlunparse(v_parsed._replace(query=final_query))
-                    logger.info(f"Re-injecting parameters: {final_url}")
-                    await page.get(final_url)
+                if not navigated:
+                    logger.error("Search submission failed to trigger navigation, falling back to direct URL")
+                    await page.get(url)
                 else:
-                    logger.info("Validated URL is already correct.")
+                    # Early bot detection: catch /sorry/ redirects before proceeding
+                    if is_bot_detected(page.url):
+                        logger.error(f"BOT DETECTION on submission — sorry page: {page.url}")
+                        return JSONResponse({"error": "captcha"}, status_code=429)
+
+                    validated_url = page.url
+                    logger.info(f"Obtained validated URL: {validated_url}")
+
+                    v_parsed = urlparse(validated_url)
+                    v_params = parse_qs(v_parsed.query)
+
+                    needs_reload = False
+                    if start_val != '0' and v_params.get('start', [''])[0] != start_val:
+                        v_params['start'] = [start_val]
+                        needs_reload = True
+                    if safe_val and v_params.get('safe', [''])[0] != safe_val:
+                        v_params['safe'] = [safe_val]
+                        needs_reload = True
+
+                    if needs_reload:
+                        final_query = urlencode(v_params, doseq=True)
+                        final_url = urlunparse(v_parsed._replace(query=final_query))
+                        logger.info(f"Re-injecting parameters: {final_url}")
+                        await page.get(final_url)
+                    else:
+                        logger.info("Validated URL is already correct.")
 
         # --- END HUMANIZED SEARCH FLOW ---
 
@@ -185,6 +222,13 @@ async def search(request: Request):
                 await asyncio.sleep(0.1)
             else:
                 await asyncio.sleep(0.25 + (random.random() * 0.1))
+
+        # Late bot detection: catch sorry pages that slipped past the URL check
+        if not detected:
+            raw_check = await page.get_content()
+            if is_bot_detected(page.url) or "sorry.google.com" in raw_check:
+                logger.error("BOT DETECTION on result polling — returning 429")
+                return JSONResponse({"error": "captcha"}, status_code=429)
 
         if detected:
             try:
@@ -234,10 +278,6 @@ async def search(request: Request):
                 await asyncio.sleep(1.0)
 
         raw_content = await page.get_content()
-
-        if "sorry.google.com" in raw_content or "captcha" in raw_content.lower():
-            logger.error("BOT DETECTION TRIGGERED")
-
         content = clean_html(raw_content)
 
         duration = time.perf_counter() - start_perf
@@ -247,13 +287,15 @@ async def search(request: Request):
 
     except Exception as e:
         logger.error(f"Proxy error: {e}")
-        global browser
-        if browser:
-            try:
-                await browser.stop()
-            except Exception:
-                pass
-        browser = None
+        if isinstance(e, FATAL_BROWSER_ERRORS):
+            global browser
+            logger.warning("Fatal browser error — resetting browser process")
+            if browser:
+                try:
+                    await browser.stop()
+                except Exception:
+                    pass
+            browser = None
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         try:

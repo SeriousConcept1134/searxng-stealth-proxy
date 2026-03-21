@@ -301,6 +301,10 @@ def clean_html(content):
 @app.on_event("startup")
 async def startup_event():
     _init_profile_pool()
+    idle = int(os.environ.get('STARTUP_IDLE_SECONDS', '0'))
+    if idle > 0:
+        logger.info(f"Startup idle: waiting {idle}s before accepting requests")
+        await asyncio.sleep(idle)
 
 
 @app.get('/search')

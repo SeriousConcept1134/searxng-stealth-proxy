@@ -9,6 +9,7 @@ services:
       - BRAVE_PROFILE_0=/data/brave_profile_0
       - BRAVE_PROFILE_1=/data/brave_profile_1
       - BRAVE_PROFILE_2=/data/brave_profile_2
+      - STARTUP_IDLE_SECONDS=${STARTUP_IDLE_SECONDS:-0}
     volumes:
       - ./data/brave_profile_0:/data/brave_profile_0:z
       - ./data/brave_profile_1:/data/brave_profile_1:z

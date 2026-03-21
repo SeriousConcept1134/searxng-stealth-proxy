@@ -48,6 +48,13 @@ suggestion_xpath = '//div[contains(@class, "ouy7Mc")]//a'
 _arcid_range = string.ascii_letters + string.digits + "_-"
 _arcid_random: tuple[str, int] | None = None
 
+def extract_text(node):
+    if node is None:
+        return ""
+    if isinstance(node, list):
+        return " ".join([extract_text(n) for n in node]).strip()
+    return " ".join(node.xpath(".//text()")).strip()
+
 def ui_async(start: int) -> str:
     global _arcid_random
     if not _arcid_random or (int(time.time()) - _arcid_random[1]) > 3600:
@@ -128,13 +135,22 @@ def response(resp: "SXNG_Response"):
 
     for result in eval_xpath_list(dom, './/div[contains(@class, "MjjYud")] | .//div[contains(@class, "Gx5Zad")] | .//div[contains(@class, "Z1YvVd")]'):
         try:
+            # Skip Top Stories and other widgets
+            if eval_xpath(result, './/g-section-with-header'):
+                continue
+            
             # Title
             title_tag = eval_xpath_getindex(result, './/h3 | .//div[contains(@role, "heading")] | .//div[contains(@role, "link")]', 0, default=None)
             if title_tag is None: continue
             title = extract_text(title_tag)
 
             # URL
-            raw_url = eval_xpath_getindex(result, ".//a/@href", 0, None)
+            raw_url = None
+            for href in eval_xpath_list(result, ".//a/@href"):
+                if "ServiceLogin" not in href and "google.com/search" not in href and not href.startswith("/search"):
+                    raw_url = href
+                    break
+            
             if raw_url is None: continue
 
             if raw_url.startswith('/url?q='):
@@ -149,17 +165,19 @@ def response(resp: "SXNG_Response"):
             url = url.strip('\"\\')
 
             if '/shorts/' in url: continue
+            if 'google.com/search' in url: continue
 
             # Content
-            content_nodes = eval_xpath(result, './/div[@data-sncf="1" or @data-sncf="2" or contains(@class, "VwiC3b") or contains(@class, "fG8Fp") or contains(@class, "GAwY7c") or contains(@class, "Uo8X3b") or contains(@class, "ITZIwc")]')
+            content_nodes = eval_xpath(result, './/div[@data-sncf="1" or @data-sncf="2" or contains(@class, "VwiC3b") or contains(@class, "fG8Fp") or contains(@class, "GAwY7c") or contains(@class, "Uo8X3b") or contains(@class, "ITZIwc") or contains(@class, "GI74Re") or contains(@class, "yXK7lf") or contains(@class, "kb0PBd")] | .//span[@data-sncf="1" or @data-sncf="2"]')
             content = extract_text(content_nodes)
 
             thumbnail = None
 
             # YouTube Reconstruction
-            yt_id_match = re.search(r'(?:v=|\/live\/|embed\/|youtu\.be\/)([0-9A-Za-z_-]{11})', url)
-            if yt_id_match:
-                thumbnail = f"https://img.youtube.com/vi/{yt_id_match.group(1)}/mqdefault.jpg"
+            if 'youtube.com' in url or 'youtu.be' in url:
+                yt_id_match = re.search(r'(?:v=|\/live\/|embed\/|youtu\.be\/)([0-9A-Za-z_-]{11})', url)
+                if yt_id_match:
+                    thumbnail = f"https://img.youtube.com/vi/{yt_id_match.group(1)}/mqdefault.jpg"
 
             # Targeted Social/High-Res containers
             if not thumbnail:

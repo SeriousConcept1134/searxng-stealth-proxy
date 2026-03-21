@@ -29,6 +29,13 @@ _last_request_time: float = 0.0
 _MIN_REQUEST_GAP = 3.5   # seconds — minimum gap between consecutive requests
 _MAX_REQUEST_JITTER = 2.5  # seconds — additional random jitter on top of the minimum
 
+# Navigator overrides injected before any page script runs
+_NAVIGATOR_OVERRIDES = """
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+"""
+
 
 def load_ua() -> str:
     try:
@@ -207,7 +214,6 @@ async def search(request: Request):
         raise HTTPException(status_code=400, detail="Missing url parameter")
 
     async with _search_semaphore:
-        # Enforce minimum inter-request gap with jitter
         elapsed = time.monotonic() - _last_request_time
         gap = _MIN_REQUEST_GAP + random.uniform(0, _MAX_REQUEST_JITTER)
         if elapsed < gap:
@@ -226,6 +232,7 @@ async def _do_search(url: str) -> HTMLResponse | JSONResponse:
 
     try:
         import nodriver.cdp.network as network
+        import nodriver.cdp.page as cdp_page
         from urllib.parse import urlparse, parse_qs
 
         target_ua = load_ua()
@@ -239,6 +246,11 @@ async def _do_search(url: str) -> HTMLResponse | JSONResponse:
             "Sec-CH-UA-Mobile": "?0",
             "Sec-CH-UA-Platform": '"Linux"',
         })))
+
+        # Inject navigator overrides before any page script runs
+        await page.send(cdp_page.add_script_to_evaluate_on_new_document(
+            source=_NAVIGATOR_OVERRIDES
+        ))
 
         # --- HUMANIZED SEARCH FLOW ---
         parsed_incoming = urlparse(url)
@@ -301,7 +313,6 @@ async def _do_search(url: str) -> HTMLResponse | JSONResponse:
             else:
                 await asyncio.sleep(0.25 + (random.random() * 0.1))
 
-        # Late bot detection: catch sorry pages that slipped past the URL check
         if not detected:
             raw_check = await page.get_content()
             if is_bot_detected(page.url) or "sorry.google.com" in raw_check:

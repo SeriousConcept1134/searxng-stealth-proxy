@@ -25,7 +25,7 @@ rm -f /tmp/.X99-lock\n\
 rm -f /data/brave_profile/Singleton*\n\
 mkdir -p /tmp/brave_work_profile\n\
 cp -a /data/brave_profile/. /tmp/brave_work_profile/\n\
-Xvfb :99 -screen 0 1024x1366x24 &\n\
+Xvfb :99 -screen 0 1920x1080x24 &\n\
 export DISPLAY=:99\n\
 export BRAVE_PROFILE=/tmp/brave_work_profile\n\
 uvicorn app.proxy_service:app --host 0.0.0.0 --port 5000" > /app/entrypoint.sh && chmod +x /app/entrypoint.sh

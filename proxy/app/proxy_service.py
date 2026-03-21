@@ -332,7 +332,11 @@ async def search(request: Request):
         return await _do_search(url)
 
 
-async def _do_search(url: str) -> HTMLResponse | JSONResponse:
+async def _do_search(url: str, _tried_profiles: set | None = None) -> HTMLResponse | JSONResponse:
+    if _tried_profiles is None:
+        _tried_profiles = set()
+    _tried_profiles.add(_active_profile_idx)
+
     start_perf = time.perf_counter()
     b = await get_browser()
     page = await b.get(new_tab=True)
@@ -400,9 +404,13 @@ async def _do_search(url: str) -> HTMLResponse | JSONResponse:
                 return JSONResponse({"error": "navigation_failed"}, status_code=503)
 
             if is_bot_detected(page.url):
-                logger.error(f"BOT DETECTION on submission — rotating profile")
+                logger.error("BOT DETECTION on submission — rotating profile")
                 await _rotate_profile()
-                return JSONResponse({"error": "captcha"}, status_code=429)
+                if len(_tried_profiles) >= len(_PROFILES):
+                    logger.error("All profiles exhausted — returning 429")
+                    return JSONResponse({"error": "captcha"}, status_code=429)
+                logger.info(f"Retrying with next profile (tried: {_tried_profiles})")
+                return await _do_search(url, _tried_profiles=_tried_profiles)
 
             validated_url = page.url
             logger.info(f"Obtained validated URL: {validated_url}")
@@ -438,7 +446,11 @@ async def _do_search(url: str) -> HTMLResponse | JSONResponse:
             if is_bot_detected(page.url) or "sorry.google.com" in raw_check:
                 logger.error("BOT DETECTION on result polling — rotating profile")
                 await _rotate_profile()
-                return JSONResponse({"error": "captcha"}, status_code=429)
+                if len(_tried_profiles) >= len(_PROFILES):
+                    logger.error("All profiles exhausted — returning 429")
+                    return JSONResponse({"error": "captcha"}, status_code=429)
+                logger.info(f"Retrying with next profile (tried: {_tried_profiles})")
+                return await _do_search(url, _tried_profiles=_tried_profiles)
 
         if detected:
             try:

@@ -125,8 +125,6 @@ services:
       - ./patches/google_videos.py:/usr/local/searxng/searx/engines/google_videos.py:ro
       - ./patches/client.py:/usr/local/searxng/searx/network/client.py:ro
       - ./patches/gsa_useragents.txt:/usr/local/searxng/searx/data/gsa_useragents.txt:ro
-    environment:
-      - PYTHONDONTWRITEBYTECODE=1
 ```
 
 The entrypoint override clears any pre-compiled `.pyc` files from the image before SearXNG starts, ensuring your mounted `.py` patches are always used. This runs automatically on every container startup — no manual recompilation needed, even after image updates or system restarts.

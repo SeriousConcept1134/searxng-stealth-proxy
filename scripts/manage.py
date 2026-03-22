@@ -8,6 +8,19 @@ import nodriver as uc
 
 _WARMUP_MARKER = '.needs_warmup'
 
+_FINAL_WARMUP_QUERIES = [
+    "https://www.google.com/search?q=funny+cats&tbm=vid",
+    "https://www.google.com/search?q=best+hiking+trails",
+    "https://www.google.com/search?q=easy+dinner+recipes",
+    "https://www.google.com/search?q=space+exploration+news",
+    "https://www.google.com/search?q=wildlife+documentary&tbm=vid",
+    "https://www.google.com/search?q=learn+guitar+beginners&tbm=vid",
+    "https://www.google.com/search?q=coffee+brewing+methods",
+    "https://www.google.com/search?q=northern+lights+photography",
+    "https://www.google.com/search?q=electric+cars+comparison",
+    "https://www.google.com/search?q=morning+yoga+routine&tbm=vid",
+]
+
 
 def find_browsers():
     """Find all valid Chromium-based browser binaries on the host."""
@@ -204,8 +217,7 @@ async def run_warmup(profile: dict, browser_path: str, proxy: str, ua: str,
     try:
         print("[*] Opening IP check page...")
         try:
-            task = asyncio.ensure_future(browser.get('https://ifconfig.me'))
-            task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+            asyncio.ensure_future(browser.get('https://ifconfig.me'))
             await asyncio.sleep(4)
         except Exception:
             pass
@@ -220,7 +232,7 @@ async def run_warmup(profile: dict, browser_path: str, proxy: str, ua: str,
                 "https://news.google.com",
                 "https://www.google.com/maps",
                 "https://www.google.com/search?q=how+to+learn+guitar",
-                "https://www.google.com/search?q=funny+cats&tbm=vid",
+                random.choice(_FINAL_WARMUP_QUERIES),
             ]
             for i, seed_url in enumerate(seed_queries, 1):
                 try:
@@ -238,7 +250,7 @@ async def run_warmup(profile: dict, browser_path: str, proxy: str, ua: str,
 
         try:
             asyncio.ensure_future(
-                browser.get('https://www.google.com/search?q=funny+cats&tbm=vid')
+                browser.get(random.choice(_FINAL_WARMUP_QUERIES))
             )
             await asyncio.sleep(3)
         except Exception:

@@ -125,7 +125,7 @@ def response(resp: "SXNG_Response"):
     dom = html.fromstring(resp.text)
 
     result_count = 0
-    for result in eval_xpath_list(dom, './/div[contains(@class, "MjjYud")] | .//div[contains(@class, "Gx5Zad")] | .//div[contains(@class, "Z1YvVd")] | .//div[contains(@class, "WVV5ke")] | .//div[contains(@class, "PmEWq")]'):
+    for result in eval_xpath_list(dom, './/div[contains(@class, "PmEWq")] | .//div[contains(@class, "WVV5ke") and not(ancestor::div[contains(@class, "PmEWq")])]'):
         if result_count >= 10:
             break
         try:

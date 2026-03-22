@@ -135,8 +135,8 @@ def response(resp: "SXNG_Response"):
 
     for result in eval_xpath_list(dom, './/div[contains(@class, "MjjYud")] | .//div[contains(@class, "Gx5Zad")] | .//div[contains(@class, "Z1YvVd")]'):
         try:
-            # Skip Top Stories and other widgets
-            if eval_xpath(result, './/g-section-with-header'):
+            # Skip Top Stories, Dictionary, and other widgets
+            if eval_xpath(result, './/g-section-with-header | .//div[contains(@class, "kp-wholepage")] | .//*[@data-attrid="DictionaryHeader"] | .//*[@data-attrid="EntryHeader"]'):
                 continue
             
             # Title

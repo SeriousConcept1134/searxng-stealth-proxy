@@ -61,6 +61,12 @@ def find_browsers():
 
 
 def run_shell(cmd):
+    """Run a shell command, using Windows-compatible syntax on win32."""
+    if sys.platform.startswith('win'):
+        # Convert bash-style redirection to Windows equivalent
+        cmd = cmd.replace('2>/dev/null', '2>nul').replace('>/dev/null', '>nul')
+        # Replace || with & on Windows (best-effort, not a full bash parser)
+        cmd = cmd.replace(' || ', ' & ')
     subprocess.run(cmd, shell=True)
 
 
@@ -198,8 +204,9 @@ async def run_warmup(profile: dict, browser_path: str, proxy: str, ua: str,
     try:
         print("[*] Opening IP check page...")
         try:
-            await browser.get('https://ifconfig.me')
-            await asyncio.sleep(2)
+            task = asyncio.ensure_future(browser.get('https://ifconfig.me'))
+            task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+            await asyncio.sleep(4)
         except Exception:
             pass
 
@@ -218,8 +225,8 @@ async def run_warmup(profile: dict, browser_path: str, proxy: str, ua: str,
             for i, seed_url in enumerate(seed_queries, 1):
                 try:
                     print(f"[*] Seed query {i}/{len(seed_queries)}: {seed_url}")
-                    await browser.get(seed_url)
-                    await asyncio.sleep(random.uniform(3.0, 6.0))
+                    asyncio.ensure_future(browser.get(seed_url))
+                    await asyncio.sleep(random.uniform(5.0, 8.0))
                     await browser.evaluate("window.scrollBy(0, 350)")
                     await asyncio.sleep(random.uniform(1.5, 3.0))
                 except Exception:
@@ -230,17 +237,33 @@ async def run_warmup(profile: dict, browser_path: str, proxy: str, ua: str,
         print('[!] CLOSE the browser window when finished.')
 
         try:
-            await browser.get('https://www.google.com/search?q=funny+cats&tbm=vid')
+            asyncio.ensure_future(
+                browser.get('https://www.google.com/search?q=funny+cats&tbm=vid')
+            )
+            await asyncio.sleep(3)
         except Exception:
             pass
 
+        # Wait for the user to close the browser window
         try:
             while True:
                 await asyncio.sleep(1)
-                if browser._process and browser._process.returncode is not None:
-                    break
-                await browser.connection.send(uc.cdp.browser.get_version())
-        except (Exception, asyncio.CancelledError):
+                # Check if the browser process has exited
+                if browser._process is not None:
+                    if browser._process.returncode is not None:
+                        break
+                    # Ping via CDP — raises if browser is gone
+                    try:
+                        await browser.connection.send(uc.cdp.browser.get_version())
+                    except Exception:
+                        break
+                else:
+                    # _process is None (common on Windows) — rely on CDP ping only
+                    try:
+                        await browser.connection.send(uc.cdp.browser.get_version())
+                    except Exception:
+                        break
+        except asyncio.CancelledError:
             pass
 
     finally:

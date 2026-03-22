@@ -2,6 +2,7 @@ services:
   sxng-proxy:
     build: ./proxy
     container_name: sxng-proxy
+    restart: unless-stopped
     ports:
       - "127.0.0.1:5000:5000"
     environment:
@@ -11,6 +12,7 @@ services:
       - BRAVE_PROFILE_2=/data/brave_profile_2
       - STARTUP_IDLE_SECONDS=${STARTUP_IDLE_SECONDS:-0}
       - SEARCH_MODE=${SEARCH_MODE:-direct}
+      - BROWSER_MODE=${BROWSER_MODE:-on_demand}
     volumes:
       - ./data/brave_profile_0:/data/brave_profile_0:z
       - ./data/brave_profile_1:/data/brave_profile_1:z

@@ -267,6 +267,13 @@ async def get_browser() -> uc.Browser:
         # from a just-terminated keepalive browser on this profile.
         async with _profile_locks.get(idx, asyncio.Lock()):
             await asyncio.sleep(2.0)
+            # Clear any stale SingletonLock left by a previously terminated browser.
+            import glob
+            for lock_file in glob.glob(os.path.join(profile, 'Singleton*')):
+                try:
+                    os.remove(lock_file)
+                except Exception:
+                    pass
             _browser = await uc.start(
                 user_data_dir=profile,
                 browser_executable_path='/usr/bin/brave-browser-stable',
@@ -326,6 +333,15 @@ async def _keepalive_loop(profile_idx: int) -> None:
                 continue
 
             logger.info(f"Recovery check for flagged profile {profile_idx}")
+
+            # Clear any stale SingletonLock left by a previously terminated browser.
+            import glob
+            for lock_file in glob.glob(os.path.join(profile_path, 'Singleton*')):
+                try:
+                    os.remove(lock_file)
+                except Exception:
+                    pass
+
             proxy = os.environ.get('PROXY_URL', '')
             args = [
                 "--no-sandbox",
@@ -376,6 +392,8 @@ async def _keepalive_loop(profile_idx: int) -> None:
                         except Exception:
                             pass
                         await asyncio.sleep(3.0)
+            except Exception as e:
+                logger.warning(f"Recovery check failed for profile {profile_idx}: {e}")
 
             await asyncio.sleep(interval)
             continue
@@ -512,10 +530,13 @@ async def search(request: Request):
 async def _do_search(url: str, _tried_profiles: set | None = None) -> HTMLResponse | JSONResponse:
     if _tried_profiles is None:
         _tried_profiles = set()
-    _tried_profiles.add(_active_profile_idx)
 
     start_perf = time.perf_counter()
     b = await get_browser()
+
+    # Record the active profile index after get_browser() has selected it,
+    # so rotation correctly tracks which profiles have been attempted.
+    _tried_profiles.add(_active_profile_idx)
     page = await b.get(new_tab=True)
 
     logger.info(

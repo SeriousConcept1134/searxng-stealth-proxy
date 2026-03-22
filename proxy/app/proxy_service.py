@@ -28,6 +28,11 @@ _WARMUP_MARKER = '.needs_warmup'
 # organic search via the Google homepage. Direct is the default.
 _SEARCH_MODE = os.environ.get('SEARCH_MODE', 'direct').lower()
 
+# Browser mode: 'on_demand' starts browsers as needed (default, lower RAM),
+# 'concurrent' pre-starts all profile browsers at container launch for
+# instant rotation with no startup penalty.
+_BROWSER_MODE = os.environ.get('BROWSER_MODE', 'on_demand').lower()
+
 # Serialise requests to avoid concurrent Google hits from the same session
 _search_semaphore = asyncio.Semaphore(1)
 _last_request_time: float = 0.0
@@ -78,10 +83,12 @@ _egress_timezone: str = _TIMEZONE_FALLBACK
 _PROFILES: list[str] = []
 _active_profile_idx: int = 0
 _profile_flagged: dict[int, bool] = {}
-_browser: uc.Browser | None = None
+_browser: uc.Browser | None = None           # on_demand mode
+_browsers: dict[int, uc.Browser | None] = {} # concurrent mode
 
 # Per-profile locks prevent keepalive and get_browser() from starting
 # concurrent browser instances on the same profile directory.
+# Only used in on_demand mode — concurrent mode owns each profile exclusively.
 _profile_locks: dict[int, asyncio.Lock] = {}
 
 
@@ -261,72 +268,136 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 async def get_browser() -> uc.Browser:
-    """Return the active browser, starting a new one if needed."""
+    """Return the active browser, starting a new one if needed.
+
+    In on_demand mode: starts a browser on first call, reuses on subsequent.
+    In concurrent mode: all browsers are pre-started at startup; returns the
+    browser for the current active profile directly.
+    """
     global _browser, _active_profile_idx, _egress_timezone
 
+    if _BROWSER_MODE == 'concurrent':
+        b = _browsers.get(_active_profile_idx)
+        if b is None:
+            # Shouldn't happen normally — concurrent browsers are started at
+            # startup. Recover gracefully by starting one now.
+            b = await _start_browser_for_profile(_active_profile_idx)
+            _browsers[_active_profile_idx] = b
+            _egress_timezone = await detect_egress_timezone(
+                os.environ.get('PROXY_URL', '')
+            )
+        return b
+
+    # on_demand mode
     if not _browser:
         if not _PROFILES:
             _init_profile_pool()
 
         profile, idx = _get_next_healthy_profile()
         _active_profile_idx = idx
-        proxy = os.environ.get('PROXY_URL', '')
 
-        args = [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-infobars",
-            "--window-size=1920,1080",
-            "--password-store=basic",
-            "--disable-gpu" if os.name != 'nt' else "--enable-gpu",
-        ]
-
-        if proxy:
-            args.append(f'--proxy-server={proxy}')
-
-        logger.info(f"Initializing browser with profile {idx} ({profile})")
-
-        # Acquire the profile lock to prevent keepalive from holding
-        # the same profile directory concurrently. Sleep briefly after
-        # acquiring to allow the OS to release any socket/port resources
-        # from a just-terminated keepalive browser on this profile.
         async with _profile_locks.get(idx, asyncio.Lock()):
-            await asyncio.sleep(2.0)
-            # Clear any stale SingletonLock left by a previously terminated browser.
-            import glob
-            for lock_file in glob.glob(os.path.join(profile, 'Singleton*')):
-                try:
-                    os.remove(lock_file)
-                except Exception:
-                    pass
-            _browser = await uc.start(
-                user_data_dir=profile,
-                browser_executable_path='/usr/bin/brave-browser-stable',
-                headless=True,
-                browser_args=args
-            )
+            _browser = await _start_browser_for_profile(idx)
 
-        _egress_timezone = await detect_egress_timezone(proxy)
+        _egress_timezone = await detect_egress_timezone(
+            os.environ.get('PROXY_URL', '')
+        )
 
     return _browser
 
 
 async def _reset_browser() -> None:
-    """Stop the current browser and clear the global reference."""
+    """Stop the current browser and clear the global reference.
+
+    In concurrent mode, stops and clears only the active profile's browser.
+    """
     global _browser
-    if _browser:
-        try:
-            await _browser.stop()
-        except Exception:
-            pass
-    _browser = None
+    if _BROWSER_MODE == 'concurrent':
+        b = _browsers.get(_active_profile_idx)
+        if b:
+            try:
+                await b.stop()
+            except Exception:
+                pass
+        _browsers[_active_profile_idx] = None
+    else:
+        if _browser:
+            try:
+                await _browser.stop()
+            except Exception:
+                pass
+        _browser = None
 
 
 async def _rotate_profile() -> None:
     """Flag the active profile, write the warmup marker, and reset the browser."""
     _flag_active_profile()
-    await _reset_browser()
+    if _BROWSER_MODE == 'concurrent':
+        # In concurrent mode we don't stop the browser — just update the
+        # active index so the next search routes to a healthy profile.
+        global _active_profile_idx
+        _, idx = _get_next_healthy_profile()
+        _active_profile_idx = idx
+    else:
+        await _reset_browser()
+
+
+async def _start_browser_for_profile(idx: int) -> uc.Browser:
+    """Start a new browser instance for the given profile index.
+
+    Clears stale SingletonLocks, applies a brief OS release delay, and
+    returns the started browser. Used by both on_demand and concurrent modes.
+    """
+    import glob
+    profile = _PROFILES[idx]
+    proxy = os.environ.get('PROXY_URL', '')
+
+    args = [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-infobars",
+        "--window-size=1920,1080",
+        "--password-store=basic",
+        "--disable-gpu" if os.name != 'nt' else "--enable-gpu",
+    ]
+    if proxy:
+        args.append(f'--proxy-server={proxy}')
+
+    logger.info(f"Initializing browser with profile {idx} ({profile})")
+
+    for lock_file in glob.glob(os.path.join(profile, 'Singleton*')):
+        try:
+            os.remove(lock_file)
+        except Exception:
+            pass
+
+    await asyncio.sleep(2.0)
+    return await uc.start(
+        user_data_dir=profile,
+        browser_executable_path='/usr/bin/brave-browser-stable',
+        headless=True,
+        browser_args=args
+    )
+
+
+async def _timezone_check_loop() -> None:
+    """Periodically re-detect the WARP egress timezone and update the cache.
+
+    Runs every 30 minutes. If the timezone has changed (e.g. WARP re-routed
+    to a different egress), updates _egress_timezone so subsequent tabs pick
+    it up via set_timezone_override without needing a browser restart.
+    """
+    global _egress_timezone
+    while True:
+        await asyncio.sleep(30 * 60)
+        proxy = os.environ.get('PROXY_URL', '')
+        new_tz = await detect_egress_timezone(proxy)
+        if new_tz != _egress_timezone:
+            logger.info(
+                f"Egress timezone changed: {_egress_timezone} → {new_tz}, updating"
+            )
+            _egress_timezone = new_tz
 
 
 async def _humanized_keepalive_search(browser: uc.Browser, query: str, tbm: str) -> bool:
@@ -425,7 +496,47 @@ async def _keepalive_loop(profile_idx: int) -> None:
 
             logger.info(f"Recovery check for flagged profile {profile_idx}")
 
-            # Clear any stale SingletonLock left by a previously terminated browser.
+            # In concurrent mode the profile has its own persistent browser —
+            # use it directly without spinning up a temporary one.
+            if _BROWSER_MODE == 'concurrent':
+                b = _browsers.get(profile_idx)
+                if b is None:
+                    await asyncio.sleep(interval)
+                    continue
+                try:
+                    probe_query, probe_tbm = random.choice(_KEEPALIVE_QUERIES)
+                    probe_ok = await _humanized_keepalive_search(b, probe_query, probe_tbm)
+
+                    if not probe_ok:
+                        logger.info(
+                            f"Recovery check: profile {profile_idx} still blocked"
+                        )
+                    else:
+                        follow_ups = random.sample(
+                            [q for q in _KEEPALIVE_QUERIES
+                             if q != (probe_query, probe_tbm)],
+                            k=min(2, len(_KEEPALIVE_QUERIES) - 1)
+                        )
+                        for query, tbm in follow_ups:
+                            await _humanized_keepalive_search(b, query, tbm)
+                            await asyncio.sleep(random.uniform(2.0, 4.0))
+                        _profile_flagged[profile_idx] = False
+                        marker = os.path.join(profile_path, _WARMUP_MARKER)
+                        try:
+                            if os.path.exists(marker):
+                                os.remove(marker)
+                        except Exception as e:
+                            logger.warning(f"Could not remove warmup marker: {e}")
+                        logger.info(
+                            f"Profile {profile_idx} recovered automatically — "
+                            f"flag and marker cleared"
+                        )
+                except Exception as e:
+                    logger.warning(f"Recovery check failed for profile {profile_idx}: {e}")
+                await asyncio.sleep(interval)
+                continue
+
+            # on_demand mode — clear stale locks and spin up a temporary browser.
             import glob
             for lock_file in glob.glob(os.path.join(profile_path, 'Singleton*')):
                 try:
@@ -513,8 +624,23 @@ async def _keepalive_loop(profile_idx: int) -> None:
         cycle_queries = random.sample(_KEEPALIVE_QUERIES, k=n_queries)
 
         try:
-            if profile_idx == _active_profile_idx and _browser is not None:
-                # Active profile — reuse the running browser directly.
+            if _BROWSER_MODE == 'concurrent':
+                # Concurrent mode — each profile has its own persistent browser.
+                # Use it directly without any locking.
+                b = _browsers.get(profile_idx)
+                if b is None:
+                    await asyncio.sleep(interval)
+                    continue
+                logger.info(
+                    f"Keepalive: running {n_queries} humanized searches "
+                    f"on profile {profile_idx} (concurrent)"
+                )
+                for query, tbm in cycle_queries:
+                    await _humanized_keepalive_search(b, query, tbm)
+                    await asyncio.sleep(random.uniform(2.0, 4.0))
+                logger.info(f"Keepalive complete for profile {profile_idx}")
+            elif profile_idx == _active_profile_idx and _browser is not None:
+                # on_demand active profile — reuse the running browser directly.
                 # Do NOT hold _search_semaphore for the full humanized sequence:
                 # real search requests open their own tabs concurrently.
                 logger.info(
@@ -526,28 +652,10 @@ async def _keepalive_loop(profile_idx: int) -> None:
                     await asyncio.sleep(random.uniform(2.0, 4.0))
                 logger.info(f"Keepalive complete for active profile {profile_idx}")
             else:
-                # Inactive profile — spin up a temporary browser.
-                proxy = os.environ.get('PROXY_URL', '')
-                args = [
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-infobars",
-                    "--window-size=1920,1080",
-                    "--password-store=basic",
-                    "--disable-gpu",
-                ]
-                if proxy:
-                    args.append(f'--proxy-server={proxy}')
-
+                # on_demand inactive profile — spin up a temporary browser.
                 lock = _profile_locks.get(profile_idx, asyncio.Lock())
                 async with lock:
-                    tmp_browser = await uc.start(
-                        user_data_dir=profile_path,
-                        browser_executable_path='/usr/bin/brave-browser-stable',
-                        headless=True,
-                        browser_args=args
-                    )
+                    tmp_browser = await _start_browser_for_profile(profile_idx)
                     try:
                         logger.info(
                             f"Keepalive: running {n_queries} humanized searches "
@@ -595,16 +703,38 @@ def clean_html(content):
 
 @app.on_event("startup")
 async def startup_event():
+    global _egress_timezone
     _init_profile_pool()
     logger.info(f"Search mode: {_SEARCH_MODE}")
+    logger.info(f"Browser mode: {_BROWSER_MODE}")
+
+    proxy = os.environ.get('PROXY_URL', '')
+
+    if _BROWSER_MODE == 'concurrent':
+        # Pre-start a browser for every profile in the pool.
+        for i in range(len(_PROFILES)):
+            try:
+                b = await _start_browser_for_profile(i)
+                _browsers[i] = b
+                logger.info(f"Pre-started browser for profile {i}")
+            except Exception as e:
+                logger.error(f"Failed to pre-start browser for profile {i}: {e}")
+                _browsers[i] = None
+        # Detect timezone once — all browsers share the same WARP egress.
+        _egress_timezone = await detect_egress_timezone(proxy)
+    else:
+        # on_demand: timezone detected lazily at first browser start.
+        pass
+
     idle = int(os.environ.get('STARTUP_IDLE_SECONDS', '0'))
     if idle > 0:
         logger.info(f"Startup idle: waiting {idle}s before accepting requests")
         await asyncio.sleep(idle)
 
-    # Start a keepalive loop for each profile in the pool
+    # Start keepalive loops and timezone check loop
     for i in range(len(_PROFILES)):
         asyncio.ensure_future(_keepalive_loop(i))
+    asyncio.ensure_future(_timezone_check_loop())
     logger.info(f"Keepalive loops started for {len(_PROFILES)} profile(s)")
 
 
@@ -860,9 +990,21 @@ async def _do_search(url: str, _tried_profiles: set | None = None) -> HTMLRespon
 @app.get('/status')
 async def status():
     flagged = {i: _profile_flagged.get(i, False) for i in range(len(_PROFILES))}
+    if _BROWSER_MODE == 'concurrent':
+        browsers_up = {i: _browsers.get(i) is not None for i in range(len(_PROFILES))}
+        return {
+            'status': 'online',
+            'browser_mode': 'concurrent',
+            'browsers': browsers_up,
+            'active_profile': _active_profile_idx,
+            'profiles': flagged,
+            'egress_timezone': _egress_timezone,
+        }
     return {
         'status': 'online',
+        'browser_mode': 'on_demand',
         'browser': _browser is not None,
         'active_profile': _active_profile_idx,
         'profiles': flagged,
+        'egress_timezone': _egress_timezone,
     }

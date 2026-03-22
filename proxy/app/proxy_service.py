@@ -317,9 +317,68 @@ async def _keepalive_loop(profile_idx: int) -> None:
         interval = random.uniform(_KEEPALIVE_MIN, _KEEPALIVE_MAX)
 
         if _profile_flagged.get(profile_idx, False):
-            logger.info(
-                f"Keepalive skipped for profile {profile_idx} — flagged for re-warm"
-            )
+            # Profile is flagged — attempt a recovery check instead of skipping.
+            # Spin up a temporary browser and navigate to Google. If no CAPTCHA
+            # is detected, the session has recovered on its own and we clear the flag.
+            profile_path = _PROFILES[profile_idx] if profile_idx < len(_PROFILES) else None
+            if not profile_path:
+                await asyncio.sleep(interval)
+                continue
+
+            logger.info(f"Recovery check for flagged profile {profile_idx}")
+            proxy = os.environ.get('PROXY_URL', '')
+            args = [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--window-size=1920,1080",
+                "--password-store=basic",
+                "--disable-gpu",
+            ]
+            if proxy:
+                args.append(f'--proxy-server={proxy}')
+
+            try:
+                lock = _profile_locks.get(profile_idx, asyncio.Lock())
+                async with lock:
+                    tmp_browser = await uc.start(
+                        user_data_dir=profile_path,
+                        browser_executable_path='/usr/bin/brave-browser-stable',
+                        headless=True,
+                        browser_args=args
+                    )
+                    try:
+                        page = await tmp_browser.get('https://www.google.com/webhp')
+                        await asyncio.sleep(3.0)
+                        current_url = page.url
+
+                        if is_bot_detected(current_url):
+                            logger.info(
+                                f"Recovery check: profile {profile_idx} still blocked"
+                            )
+                        else:
+                            # No CAPTCHA — profile has recovered
+                            _profile_flagged[profile_idx] = False
+                            marker = os.path.join(profile_path, _WARMUP_MARKER)
+                            try:
+                                if os.path.exists(marker):
+                                    os.remove(marker)
+                            except Exception as e:
+                                logger.warning(f"Could not remove warmup marker: {e}")
+                            logger.info(
+                                f"Profile {profile_idx} recovered automatically — "
+                                f"flag and marker cleared"
+                            )
+                    finally:
+                        try:
+                            await tmp_browser.stop()
+                        except Exception:
+                            pass
+                        await asyncio.sleep(1.0)
+            except Exception as e:
+                logger.warning(f"Recovery check failed for profile {profile_idx}: {e}")
+
             await asyncio.sleep(interval)
             continue
 

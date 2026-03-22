@@ -538,6 +538,13 @@ async def _do_search(url: str, _tried_profiles: set | None = None) -> HTMLRespon
     if _tried_profiles is None:
         _tried_profiles = set()
 
+    # If every profile in the pool is already flagged, return 429 immediately
+    # rather than falling through to get_browser() which would re-use a flagged
+    # profile and loop indefinitely.
+    if _PROFILES and all(_profile_flagged.get(i, False) for i in range(len(_PROFILES))):
+        logger.error("All profiles exhausted — returning 429")
+        return JSONResponse({"error": "captcha"}, status_code=429)
+
     start_perf = time.perf_counter()
     b = await get_browser()
 

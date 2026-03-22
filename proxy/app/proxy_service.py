@@ -262,8 +262,11 @@ async def get_browser() -> uc.Browser:
         logger.info(f"Initializing browser with profile {idx} ({profile})")
 
         # Acquire the profile lock to prevent keepalive from holding
-        # the same profile directory concurrently.
+        # the same profile directory concurrently. Sleep briefly after
+        # acquiring to allow the OS to release any socket/port resources
+        # from a just-terminated keepalive browser on this profile.
         async with _profile_locks.get(idx, asyncio.Lock()):
+            await asyncio.sleep(0.5)
             _browser = await uc.start(
                 user_data_dir=profile,
                 browser_executable_path='/usr/bin/brave-browser-stable',
@@ -382,6 +385,10 @@ async def _keepalive_loop(profile_idx: int) -> None:
                             await tmp_browser.stop()
                         except Exception:
                             pass
+                        # Brief pause before releasing the lock so the OS
+                        # can fully release socket/port resources before
+                        # another browser start on this profile is allowed.
+                        await asyncio.sleep(1.0)
 
         except Exception as e:
             logger.warning(f"Keepalive failed for profile {profile_idx}: {e}")

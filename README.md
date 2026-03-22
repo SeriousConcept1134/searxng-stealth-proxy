@@ -6,7 +6,10 @@ This project provides a standalone browser-based stealth proxy to restore **Goog
 
 - **Bypass 403/429 Blocks**: Uses `nodriver` (Brave/Chrome) with full CDP fingerprint hardening to avoid bot detection.
 - **Multi-Profile Rotation**: Maintains a pool of 3 warmed browser profiles with automatic failover on CAPTCHA detection.
+- **Automated Session Recovery**: Flagged profiles periodically self-test and recover without manual intervention.
+- **Humanized Keepalive**: Background humanized search sequences maintain session trust across all profiles.
 - **Configurable Search Mode**: Switch between fast direct URL navigation and a full humanized search simulation.
+- **Configurable Browser Mode**: Choose between on-demand browser starts (lower RAM) or concurrent pre-started browsers (instant rotation).
 - **High-Fidelity Metadata**: Restores views, dates, and author information for Google Videos.
 - **IP Rotation (Optional)**: Includes a Cloudflare WARP profile for IP cleanliness.
 - **Surgical Patching**: Easy integration via Docker Volume Overlays.
@@ -172,6 +175,7 @@ All configuration is via `.env`. See `.env.example` for the full reference. Key 
 | `PROXY_URL` | _(empty)_ | SOCKS5 proxy URL for the container (e.g. WARP) |
 | `HOST_PROXY_URL` | _(empty)_ | SOCKS5 proxy URL accessible from the host (for warmup) |
 | `SEARCH_MODE` | `direct` | `direct` for fast URL navigation, `humanized` for homepage simulation |
+| `BROWSER_MODE` | `on_demand` | `on_demand` for lower RAM, `concurrent` for instant profile rotation |
 | `STARTUP_IDLE_SECONDS` | `0` | Seconds to wait after startup before accepting requests |
 | `BROWSER_PATH` | _(auto-detect)_ | Override the browser binary used by the warmup script |
 
@@ -181,6 +185,13 @@ The proxy supports two search modes, switchable via `SEARCH_MODE` in `.env`:
 
 - **`direct`** (default) — navigates straight to the Google search URL. Fast (~2–3s), recommended for normal use. All CDP fingerprint hardening still applies.
 - **`humanized`** — simulates organic search by navigating to the Google homepage, typing the query, and submitting the form. Slower (~8–12s) but mimics human browsing more closely. Use if direct mode triggers frequent CAPTCHAs.
+
+### Browser Mode
+
+The proxy supports two browser management modes, switchable via `BROWSER_MODE` in `.env`:
+
+- **`on_demand`** (default) — browsers start when needed and shut down after inactivity. Lower RAM usage (~200–400MB per active profile). Profile locks prevent concurrent access conflicts.
+- **`concurrent`** — all 3 profile browsers are pre-started at container launch. Instant profile rotation with no startup penalty. Each browser owns its profile exclusively so no locking is needed. Higher RAM usage (~600MB–1.2GB total at idle). Recommended on systems with ≥8GB RAM.
 
 ### Post-Warmup Idle Delay
 
@@ -198,8 +209,9 @@ The proxy applies a comprehensive set of CDP overrides per browser tab to presen
 
 - **Native Brave/Chromium UA** matching the actual browser engine version (no UA/engine mismatch)
 - **`Sec-CH-UA` client hint headers** normalized to match the UA string
+- **`Referer` header** set to `https://www.google.com/` to signal requests originate from Google
 - **`navigator.webdriver`** removed; `plugins` and `languages` normalized
-- **Timezone** auto-detected from the WARP egress IP via `ip-api.com` at browser startup
+- **Timezone** auto-detected from the WARP egress IP via `ip-api.com` at startup, re-checked every 30 minutes
 - **Viewport** enforced via `Emulation.setDeviceMetricsOverride` at `1920x1080`
 - **Request serialization** via `asyncio.Semaphore` with 3.5–6s randomized inter-request jitter
 
@@ -208,20 +220,27 @@ The proxy applies a comprehensive set of CDP overrides per browser tab to presen
 The proxy maintains a pool of 3 browser profiles (`brave_profile_0`, `brave_profile_1`, `brave_profile_2`):
 
 - On CAPTCHA detection, the active profile is **flagged** and a `.needs_warmup` marker file is written into its directory.
-- The proxy automatically **rotates** to the next healthy profile without downtime.
-- Flagged profiles run periodic automated recovery checks — if Google no longer presents a CAPTCHA, the flag is cleared automatically without manual intervention.
-- The `/status` endpoint exposes pool state including which profiles are flagged.
+- The proxy automatically **rotates** to the next healthy profile and retries the search transparently — all profiles are tried before a 429 is returned to SearXNG.
+- Flagged profiles run periodic automated recovery checks using humanized search sequences — if Google no longer presents a CAPTCHA, the flag is cleared automatically without manual intervention.
+- The `/status` endpoint exposes pool state including which profiles are flagged and the current egress timezone.
 - The warmup script reads marker files to determine which profiles need attention.
 
 ### 4. Profile Persistence
 
 Profile data is volume-mounted directly at `/data/brave_profile_0/1/2` and used in-place — no tmp copy is made. Session data (cookies, trust history) **accumulates and persists across container restarts**, which is important for maintaining Google's session trust score.
 
-### 5. Session Keepalive
+### 5. Session Keepalive & Automated Recovery
 
-The proxy runs a background keepalive loop for each profile, visiting `google.com/webhp` on a randomized 18–28 minute interval to refresh session activity signals. This prevents inactivity-triggered CAPTCHA challenges that occur when a warm profile sits idle for extended periods.
+The proxy runs a background keepalive loop for each profile on a randomized 18–28 minute interval:
 
-### 6. Surgical Patching vs. Image Rebuilding
+- **Healthy profiles**: runs 2–3 humanized search queries sampled from a diverse pool covering web and video search, building genuine behavioral signals rather than just page visits.
+- **Flagged profiles**: runs a humanized search probe — if it passes, runs 2 more follow-up searches to build session depth before automatically clearing the flag. If the probe fails, the profile stays flagged and retries next interval.
+
+### 6. Timezone Monitoring
+
+A background `_timezone_check_loop` re-queries the WARP egress IP timezone every 30 minutes. If WARP re-routes to a different egress, the cached timezone is updated automatically and takes effect on the next browser tab without requiring a restart.
+
+### 7. Surgical Patching vs. Image Rebuilding
 
 The `.py` files in `/patches` are mounted directly over the standard SearXNG container files via Docker volume overlays. This allows you to update SearXNG normally while keeping the proxy integration intact.
 
@@ -257,19 +276,30 @@ The script will queue all flagged profiles, warm each one in sequence (skipping 
 
 ## 📊 Status Endpoint
 
-The proxy exposes a `/status` endpoint at `http://localhost:5000/status`:
+The proxy exposes a `/status` endpoint at `http://localhost:5000/status`.
 
+**`on_demand` mode:**
 ```json
 {
   "status": "online",
+  "browser_mode": "on_demand",
   "browser": true,
   "active_profile": 0,
-  "profiles": {
-    "0": false,
-    "1": false,
-    "2": true
-  }
+  "profiles": { "0": false, "1": false, "2": true },
+  "egress_timezone": "Asia/Jerusalem"
 }
 ```
 
-`true` in the profiles map indicates that profile is flagged and needs re-warming.
+**`concurrent` mode:**
+```json
+{
+  "status": "online",
+  "browser_mode": "concurrent",
+  "browsers": { "0": true, "1": true, "2": true },
+  "active_profile": 0,
+  "profiles": { "0": false, "1": false, "2": true },
+  "egress_timezone": "Asia/Jerusalem"
+}
+```
+
+`true` in the profiles map indicates that profile is flagged and needs re-warming. In concurrent mode, `browsers` shows which browser instances are currently running.

@@ -480,7 +480,10 @@ async def _do_search(url: str, _tried_profiles: set | None = None) -> HTMLRespon
                     }})()
                 """
 
-                if await page.evaluate(is_mapped_js):
+                result_count_js = f"document.querySelectorAll('{selectors}').length"
+                result_count = await page.evaluate(result_count_js)
+
+                if result_count >= 10 and await page.evaluate(is_mapped_js):
                     logger.info("Fast-path triggered: Real images mapped")
                     await asyncio.sleep(0.4)
                 else:
@@ -489,6 +492,16 @@ async def _do_search(url: str, _tried_profiles: set | None = None) -> HTMLRespon
                         await page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {step});")
                         await asyncio.sleep(0.3)
 
+                    # Wait for result count to stabilize after scrolling
+                    prev_count = 0
+                    for _ in range(20):
+                        current_count = await page.evaluate(result_count_js)
+                        if current_count >= 10 and current_count == prev_count:
+                            break
+                        prev_count = current_count
+                        await asyncio.sleep(0.2)
+
+                    # Poll for image mapping to complete
                     for _ in range(30):
                         if await page.evaluate(is_mapped_js):
                             break

@@ -38,6 +38,32 @@ _MAX_REQUEST_JITTER = 2.5
 _KEEPALIVE_MIN = 18 * 60
 _KEEPALIVE_MAX = 28 * 60
 
+# Query pool for humanized keepalive searches.
+# Each entry is a (query, tbm) tuple — mix of web and video to build
+# cross-property breadth. Sampled randomly each cycle.
+_KEEPALIVE_QUERIES = [
+    ("best hiking trails near mountains", ""),
+    ("how to make sourdough bread at home", ""),
+    ("latest space exploration news", ""),
+    ("funny cat compilations", "vid"),
+    ("learn python programming beginners", ""),
+    ("best documentary films", "vid"),
+    ("home garden tips spring planting", ""),
+    ("world travel destinations bucket list", ""),
+    ("easy pasta recipes dinner", ""),
+    ("northern lights photography tips", ""),
+    ("electric cars comparison review", ""),
+    ("jazz music relaxing playlist", "vid"),
+    ("how does the stock market work", ""),
+    ("best science podcasts 2024", ""),
+    ("ocean wildlife documentary", "vid"),
+    ("beginner yoga morning routine", "vid"),
+    ("history of ancient rome", ""),
+    ("coffee brewing methods guide", ""),
+    ("wildlife photography tips nature", ""),
+    ("classic movies everyone should watch", ""),
+]
+
 # Navigator overrides injected before any page script runs
 _NAVIGATOR_OVERRIDES = """
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -303,18 +329,86 @@ async def _rotate_profile() -> None:
     await _reset_browser()
 
 
+async def _humanized_keepalive_search(browser: uc.Browser, query: str, tbm: str) -> bool:
+    """Perform a single humanized search on the given browser for keepalive purposes.
+
+    Navigates to the Google homepage, types the query, submits, and waits
+    briefly for results. Returns True if no bot detection was triggered,
+    False otherwise. Does not raise — all exceptions are caught internally.
+    """
+    page = None
+    try:
+        page = await browser.get(new_tab=True)
+
+        import nodriver.cdp.network as network
+        import nodriver.cdp.page as cdp_page
+        import nodriver.cdp.emulation as emulation
+
+        target_ua = load_ua()
+        await page.send(network.set_user_agent_override(
+            user_agent=target_ua,
+            accept_language="en-US,en;q=0.9",
+            platform="Linux",
+        ))
+        await page.send(network.set_extra_http_headers(headers=network.Headers({
+            "Sec-CH-UA": '"Chromium";v="146", "Brave";v="146", "Not/A)Brand";v="99"',
+            "Sec-CH-UA-Mobile": "?0",
+            "Sec-CH-UA-Platform": '"Linux"',
+            "Referer": "https://www.google.com/",
+        })))
+        await page.send(cdp_page.add_script_to_evaluate_on_new_document(
+            source=_NAVIGATOR_OVERRIDES
+        ))
+        await page.send(emulation.set_timezone_override(timezone_id=_egress_timezone))
+        await page.send(emulation.set_device_metrics_override(
+            width=1920, height=1080, device_scale_factor=1, mobile=False,
+        ))
+
+        entry_url = "https://www.google.com/webhp?hl=en"
+        if tbm == 'vid':
+            entry_url += "&tbm=vid"
+
+        await page.get(entry_url)
+
+        search_input = await page.select('textarea[name="q"], input[name="q"]', timeout=5)
+        if not search_input:
+            return False
+
+        await submit_search(page, search_input, query)
+
+        if is_bot_detected(page.url):
+            return False
+
+        # Brief dwell to simulate reading results
+        await asyncio.sleep(random.uniform(3.0, 6.0))
+        await page.evaluate("window.scrollBy(0, 350)")
+        await asyncio.sleep(random.uniform(1.0, 2.5))
+
+        return True
+
+    except Exception as e:
+        logger.debug(f"Humanized keepalive search error: {e}")
+        return False
+    finally:
+        if page:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+
 async def _keepalive_loop(profile_idx: int) -> None:
-    """Background coroutine that periodically visits google.com/webhp to keep
+    """Background coroutine that periodically runs humanized searches to keep
     the given profile's session trust score alive.
 
-    For the active profile (browser already running), reuses the existing
-    browser via a new tab. For inactive profiles, spins up a temporary browser,
-    visits the page, and shuts it down immediately.
+    For the active profile (browser already running), opens new tabs directly
+    without holding the search semaphore — concurrent real searches proceed
+    in their own tabs unblocked. For inactive profiles, spins up a temporary
+    browser, runs the searches, and shuts it down cleanly.
 
-    Flagged profiles are skipped — no point refreshing a session that needs
-    re-warming. Each profile has a randomized initial stagger (60–180s) so
-    all three don't fire simultaneously on startup. The interval is randomized
-    between _KEEPALIVE_MIN and _KEEPALIVE_MAX to avoid a robotic fixed cadence.
+    Flagged profiles run an automated recovery sequence instead: one humanized
+    search as a probe — if it passes, two more are run to build session depth,
+    then the flag is cleared. If the probe fails, the profile stays flagged.
     """
     # Stagger startup so profiles don't all fire at once
     stagger = random.uniform(60, 180) * (profile_idx + 1)
@@ -324,9 +418,6 @@ async def _keepalive_loop(profile_idx: int) -> None:
         interval = random.uniform(_KEEPALIVE_MIN, _KEEPALIVE_MAX)
 
         if _profile_flagged.get(profile_idx, False):
-            # Profile is flagged — attempt a recovery check instead of skipping.
-            # Spin up a temporary browser and navigate to Google. If no CAPTCHA
-            # is detected, the session has recovered on its own and we clear the flag.
             profile_path = _PROFILES[profile_idx] if profile_idx < len(_PROFILES) else None
             if not profile_path:
                 await asyncio.sleep(interval)
@@ -365,23 +456,30 @@ async def _keepalive_loop(profile_idx: int) -> None:
                         browser_args=args
                     )
                     try:
-                        # Test with an actual search URL — visiting the homepage
-                        # alone is insufficient as Google only challenges search
-                        # requests, not homepage loads.
-                        recovery_url = (
-                            'https://www.google.com/search?q=weather+today'
-                            '&hl=en&safe=off'
+                        # Probe: one humanized search to test if session recovered
+                        probe_query, probe_tbm = random.choice(_KEEPALIVE_QUERIES)
+                        probe_ok = await _humanized_keepalive_search(
+                            tmp_browser, probe_query, probe_tbm
                         )
-                        page = await tmp_browser.get(recovery_url)
-                        await asyncio.sleep(3.0)
-                        current_url = page.url
 
-                        if is_bot_detected(current_url):
+                        if not probe_ok:
                             logger.info(
                                 f"Recovery check: profile {profile_idx} still blocked"
                             )
                         else:
-                            # No CAPTCHA on a real search — profile has recovered
+                            # Probe passed — run 2 more searches to build session depth
+                            follow_ups = random.sample(
+                                [q for q in _KEEPALIVE_QUERIES
+                                 if q != (probe_query, probe_tbm)],
+                                k=min(2, len(_KEEPALIVE_QUERIES) - 1)
+                            )
+                            for query, tbm in follow_ups:
+                                await _humanized_keepalive_search(
+                                    tmp_browser, query, tbm
+                                )
+                                await asyncio.sleep(random.uniform(2.0, 4.0))
+
+                            # Clear the flag — profile is warm again
                             _profile_flagged[profile_idx] = False
                             marker = os.path.join(profile_path, _WARMUP_MARKER)
                             try:
@@ -410,29 +508,25 @@ async def _keepalive_loop(profile_idx: int) -> None:
             await asyncio.sleep(interval)
             continue
 
+        # Pick 2–3 random queries for this keepalive cycle
+        n_queries = random.randint(2, 3)
+        cycle_queries = random.sample(_KEEPALIVE_QUERIES, k=n_queries)
+
         try:
             if profile_idx == _active_profile_idx and _browser is not None:
-                # Reuse the active browser — acquire semaphore to avoid
-                # colliding with an in-progress search request
-                async with _search_semaphore:
-                    page = await _browser.get(new_tab=True)
-                    try:
-                        await page.get('https://www.google.com/webhp')
-                        await asyncio.sleep(random.uniform(3.0, 6.0))
-                        await page.evaluate("window.scrollBy(0, 300)")
-                        await asyncio.sleep(random.uniform(1.0, 2.0))
-                        logger.info(
-                            f"Keepalive complete for active profile {profile_idx}"
-                        )
-                    finally:
-                        try:
-                            await page.close()
-                        except Exception:
-                            pass
+                # Active profile — reuse the running browser directly.
+                # Do NOT hold _search_semaphore for the full humanized sequence:
+                # real search requests open their own tabs concurrently.
+                logger.info(
+                    f"Keepalive: running {n_queries} humanized searches "
+                    f"on active profile {profile_idx}"
+                )
+                for query, tbm in cycle_queries:
+                    await _humanized_keepalive_search(_browser, query, tbm)
+                    await asyncio.sleep(random.uniform(2.0, 4.0))
+                logger.info(f"Keepalive complete for active profile {profile_idx}")
             else:
                 # Inactive profile — spin up a temporary browser.
-                # Acquire the profile lock so get_browser() cannot try to
-                # start a browser on this profile while keepalive holds it.
                 proxy = os.environ.get('PROXY_URL', '')
                 args = [
                     "--no-sandbox",
@@ -455,10 +549,13 @@ async def _keepalive_loop(profile_idx: int) -> None:
                         browser_args=args
                     )
                     try:
-                        page = await tmp_browser.get('https://www.google.com/webhp')
-                        await asyncio.sleep(random.uniform(3.0, 6.0))
-                        await page.evaluate("window.scrollBy(0, 300)")
-                        await asyncio.sleep(random.uniform(1.0, 2.0))
+                        logger.info(
+                            f"Keepalive: running {n_queries} humanized searches "
+                            f"on inactive profile {profile_idx}"
+                        )
+                        for query, tbm in cycle_queries:
+                            await _humanized_keepalive_search(tmp_browser, query, tbm)
+                            await asyncio.sleep(random.uniform(2.0, 4.0))
                         logger.info(
                             f"Keepalive complete for inactive profile {profile_idx}"
                         )
@@ -467,9 +564,6 @@ async def _keepalive_loop(profile_idx: int) -> None:
                             await tmp_browser.stop()
                         except Exception:
                             pass
-                        # Brief pause before releasing the lock so the OS
-                        # can fully release socket/port resources before
-                        # another browser start on this profile is allowed.
                         await asyncio.sleep(3.0)
 
         except Exception as e:

@@ -266,7 +266,7 @@ async def get_browser() -> uc.Browser:
         # acquiring to allow the OS to release any socket/port resources
         # from a just-terminated keepalive browser on this profile.
         async with _profile_locks.get(idx, asyncio.Lock()):
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(2.0)
             _browser = await uc.start(
                 user_data_dir=profile,
                 browser_executable_path='/usr/bin/brave-browser-stable',
@@ -375,9 +375,7 @@ async def _keepalive_loop(profile_idx: int) -> None:
                             await tmp_browser.stop()
                         except Exception:
                             pass
-                        await asyncio.sleep(1.0)
-            except Exception as e:
-                logger.warning(f"Recovery check failed for profile {profile_idx}: {e}")
+                        await asyncio.sleep(3.0)
 
             await asyncio.sleep(interval)
             continue
@@ -447,7 +445,7 @@ async def _keepalive_loop(profile_idx: int) -> None:
                         # Brief pause before releasing the lock so the OS
                         # can fully release socket/port resources before
                         # another browser start on this profile is allowed.
-                        await asyncio.sleep(1.0)
+                        await asyncio.sleep(3.0)
 
         except Exception as e:
             logger.warning(f"Keepalive failed for profile {profile_idx}: {e}")

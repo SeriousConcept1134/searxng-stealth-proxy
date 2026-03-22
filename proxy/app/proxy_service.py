@@ -462,6 +462,7 @@ async def _do_search(url: str, _tried_profiles: set | None = None) -> HTMLRespon
             "Sec-CH-UA": '"Chromium";v="146", "Brave";v="146", "Not/A)Brand";v="99"',
             "Sec-CH-UA-Mobile": "?0",
             "Sec-CH-UA-Platform": '"Linux"',
+            "Referer": "https://www.google.com/",
         })))
         await page.send(cdp_page.add_script_to_evaluate_on_new_document(
             source=_NAVIGATOR_OVERRIDES

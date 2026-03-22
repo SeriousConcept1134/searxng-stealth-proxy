@@ -365,7 +365,14 @@ async def _keepalive_loop(profile_idx: int) -> None:
                         browser_args=args
                     )
                     try:
-                        page = await tmp_browser.get('https://www.google.com/webhp')
+                        # Test with an actual search URL — visiting the homepage
+                        # alone is insufficient as Google only challenges search
+                        # requests, not homepage loads.
+                        recovery_url = (
+                            'https://www.google.com/search?q=weather+today'
+                            '&hl=en&safe=off'
+                        )
+                        page = await tmp_browser.get(recovery_url)
                         await asyncio.sleep(3.0)
                         current_url = page.url
 
@@ -374,7 +381,7 @@ async def _keepalive_loop(profile_idx: int) -> None:
                                 f"Recovery check: profile {profile_idx} still blocked"
                             )
                         else:
-                            # No CAPTCHA — profile has recovered
+                            # No CAPTCHA on a real search — profile has recovered
                             _profile_flagged[profile_idx] = False
                             marker = os.path.join(profile_path, _WARMUP_MARKER)
                             try:

@@ -34,6 +34,10 @@ _last_request_time: float = 0.0
 _MIN_REQUEST_GAP = 3.5
 _MAX_REQUEST_JITTER = 2.5
 
+# Keepalive interval bounds in seconds (18–28 minutes)
+_KEEPALIVE_MIN = 18 * 60
+_KEEPALIVE_MAX = 28 * 60
+
 # Navigator overrides injected before any page script runs
 _NAVIGATOR_OVERRIDES = """
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -281,6 +285,98 @@ async def _rotate_profile() -> None:
     await _reset_browser()
 
 
+async def _keepalive_loop(profile_idx: int) -> None:
+    """Background coroutine that periodically visits google.com/webhp to keep
+    the given profile's session trust score alive.
+
+    For the active profile (browser already running), reuses the existing
+    browser via a new tab. For inactive profiles, spins up a temporary browser,
+    visits the page, and shuts it down immediately.
+
+    Flagged profiles are skipped — no point refreshing a session that needs
+    re-warming. Each profile has a randomized initial stagger (60–180s) so
+    all three don't fire simultaneously on startup. The interval is randomized
+    between _KEEPALIVE_MIN and _KEEPALIVE_MAX to avoid a robotic fixed cadence.
+    """
+    # Stagger startup so profiles don't all fire at once
+    stagger = random.uniform(60, 180) * (profile_idx + 1)
+    await asyncio.sleep(stagger)
+
+    while True:
+        interval = random.uniform(_KEEPALIVE_MIN, _KEEPALIVE_MAX)
+
+        if _profile_flagged.get(profile_idx, False):
+            logger.info(
+                f"Keepalive skipped for profile {profile_idx} — flagged for re-warm"
+            )
+            await asyncio.sleep(interval)
+            continue
+
+        profile_path = _PROFILES[profile_idx] if profile_idx < len(_PROFILES) else None
+        if not profile_path:
+            await asyncio.sleep(interval)
+            continue
+
+        try:
+            if profile_idx == _active_profile_idx and _browser is not None:
+                # Reuse the active browser — acquire semaphore to avoid
+                # colliding with an in-progress search request
+                async with _search_semaphore:
+                    page = await _browser.get(new_tab=True)
+                    try:
+                        await page.get('https://www.google.com/webhp')
+                        await asyncio.sleep(random.uniform(3.0, 6.0))
+                        await page.evaluate("window.scrollBy(0, 300)")
+                        await asyncio.sleep(random.uniform(1.0, 2.0))
+                        logger.info(
+                            f"Keepalive complete for active profile {profile_idx}"
+                        )
+                    finally:
+                        try:
+                            await page.close()
+                        except Exception:
+                            pass
+            else:
+                # Inactive profile — spin up a temporary browser
+                proxy = os.environ.get('PROXY_URL', '')
+                args = [
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars",
+                    "--window-size=1920,1080",
+                    "--password-store=basic",
+                    "--disable-gpu",
+                ]
+                if proxy:
+                    args.append(f'--proxy-server={proxy}')
+
+                tmp_browser = await uc.start(
+                    user_data_dir=profile_path,
+                    browser_executable_path='/usr/bin/brave-browser-stable',
+                    headless=True,
+                    browser_args=args
+                )
+                try:
+                    page = await tmp_browser.get('https://www.google.com/webhp')
+                    await asyncio.sleep(random.uniform(3.0, 6.0))
+                    await page.evaluate("window.scrollBy(0, 300)")
+                    await asyncio.sleep(random.uniform(1.0, 2.0))
+                    logger.info(
+                        f"Keepalive complete for inactive profile {profile_idx}"
+                    )
+                finally:
+                    try:
+                        await tmp_browser.stop()
+                    except Exception:
+                        pass
+
+        except Exception as e:
+            logger.warning(f"Keepalive failed for profile {profile_idx}: {e}")
+
+        await asyncio.sleep(interval)
+
+
 def clean_html(content):
     """Shrink the HTML while keeping result markers AND thumbnail scripts"""
     try:
@@ -310,6 +406,11 @@ async def startup_event():
     if idle > 0:
         logger.info(f"Startup idle: waiting {idle}s before accepting requests")
         await asyncio.sleep(idle)
+
+    # Start a keepalive loop for each profile in the pool
+    for i in range(len(_PROFILES)):
+        asyncio.ensure_future(_keepalive_loop(i))
+    logger.info(f"Keepalive loops started for {len(_PROFILES)} profile(s)")
 
 
 @app.get('/search')

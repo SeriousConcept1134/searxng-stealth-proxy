@@ -23,8 +23,14 @@ This project provides a standalone browser-based stealth proxy to restore **Goog
 
 Clone this repo and copy the example environment file:
 
+**Linux / macOS:**
 ```bash
 cp .env.example .env
+```
+
+**Windows (PowerShell):**
+```powershell
+Copy-Item .env.example .env
 ```
 
 Find your existing SearXNG network name so the proxy can "plug in" to it:
@@ -40,8 +46,14 @@ Edit the `.env` file and set `EXTERNAL_NETWORK` to that full name.
 
 The proxy uses a pool of 3 browser profiles. Create the directories before starting:
 
+**Linux / macOS:**
 ```bash
 mkdir -p data/brave_profile_0 data/brave_profile_1 data/brave_profile_2
+```
+
+**Windows (PowerShell):**
+```powershell
+New-Item -ItemType Directory -Force -Path data\brave_profile_0, data\brave_profile_1, data\brave_profile_2
 ```
 
 ### 3. Start the Proxy Container
@@ -88,8 +100,20 @@ This step is **MANDATORY** before the proxy can serve requests. Each profile in 
 
 #### **Windows Setup:**
 
+> **Note**: Before running the setup script for the first time, you may need to allow PowerShell to execute local scripts. Run this once in an elevated PowerShell window (Run as Administrator):
+> ```powershell
+> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+> ```
+
+Run the setup script from the **repo root**:
+
 ```powershell
 .\scripts\setup.ps1
+```
+
+Then run the warmup script, also from the **repo root**:
+
+```powershell
 .\venv\Scripts\python.exe scripts\manage.py
 ```
 
@@ -185,6 +209,7 @@ The proxy maintains a pool of 3 browser profiles (`brave_profile_0`, `brave_prof
 
 - On CAPTCHA detection, the active profile is **flagged** and a `.needs_warmup` marker file is written into its directory.
 - The proxy automatically **rotates** to the next healthy profile without downtime.
+- Flagged profiles run periodic automated recovery checks — if Google no longer presents a CAPTCHA, the flag is cleared automatically without manual intervention.
 - The `/status` endpoint exposes pool state including which profiles are flagged.
 - The warmup script reads marker files to determine which profiles need attention.
 
@@ -192,7 +217,11 @@ The proxy maintains a pool of 3 browser profiles (`brave_profile_0`, `brave_prof
 
 Profile data is volume-mounted directly at `/data/brave_profile_0/1/2` and used in-place — no tmp copy is made. Session data (cookies, trust history) **accumulates and persists across container restarts**, which is important for maintaining Google's session trust score.
 
-### 5. Surgical Patching vs. Image Rebuilding
+### 5. Session Keepalive
+
+The proxy runs a background keepalive loop for each profile, visiting `google.com/webhp` on a randomized 18–28 minute interval to refresh session activity signals. This prevents inactivity-triggered CAPTCHA challenges that occur when a warm profile sits idle for extended periods.
+
+### 6. Surgical Patching vs. Image Rebuilding
 
 The `.py` files in `/patches` are mounted directly over the standard SearXNG container files via Docker volume overlays. This allows you to update SearXNG normally while keeping the proxy integration intact.
 
@@ -200,17 +229,27 @@ The `.py` files in `/patches` are mounted directly over the standard SearXNG con
 
 If you see "403", "Captcha", or 0-result responses in SearXNG, the proxy has detected a bot challenge and rotated to the next profile. Check the proxy logs:
 
+**Linux / macOS:**
 ```bash
 podman logs sxng-proxy --tail 50
+# or
+docker logs sxng-proxy --tail 50
 ```
 
-Look for `Profile X flagged — re-warm required`. Then run the warmup script — it will automatically identify which profiles need attention:
+**Windows:**
+```powershell
+docker logs sxng-proxy --tail 50
+```
 
+Look for `Profile X flagged — re-warm required`. Flagged profiles will attempt automated recovery on each keepalive cycle. If you prefer to re-warm manually, run the warmup script:
+
+**Linux / macOS:**
 ```bash
-# Linux
 ./venv/bin/python scripts/manage.py
+```
 
-# Windows
+**Windows:**
+```powershell
 .\venv\Scripts\python.exe scripts\manage.py
 ```
 

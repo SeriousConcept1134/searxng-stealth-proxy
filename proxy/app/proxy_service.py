@@ -594,34 +594,50 @@ async def _do_search(url: str, _tried_profiles: set | None = None) -> HTMLRespon
                     }})()
                 """
 
-                result_count_js = f"document.querySelectorAll('{selectors}').length"
-                result_count = await page.evaluate(result_count_js)
+                if tbm_val == 'vid':
+                    # Video results use lazy-load — scroll to trigger full render
+                    # before checking image mapping.
+                    result_count_js = f"document.querySelectorAll('{selectors}').length"
+                    result_count = await page.evaluate(result_count_js)
 
-                if result_count >= 10 and await page.evaluate(is_mapped_js):
-                    logger.info("Fast-path triggered: Real images mapped")
-                    await asyncio.sleep(0.4)
+                    if result_count >= 10 and await page.evaluate(is_mapped_js):
+                        logger.info("Fast-path triggered: Real images mapped")
+                        await asyncio.sleep(0.4)
+                    else:
+                        logger.info("Slow-path: Performing smooth stepped stabilization")
+                        for step in [0.25, 0.5, 0.75, 1.0]:
+                            await page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {step});")
+                            await asyncio.sleep(0.3)
+
+                        # Wait for result count to stabilize after scrolling
+                        prev_count = 0
+                        for _ in range(20):
+                            current_count = await page.evaluate(result_count_js)
+                            if current_count >= 10 and current_count == prev_count:
+                                break
+                            prev_count = current_count
+                            await asyncio.sleep(0.2)
+
+                        # Poll for image mapping to complete
+                        for _ in range(30):
+                            if await page.evaluate(is_mapped_js):
+                                break
+                            await asyncio.sleep(0.1)
+
+                        await asyncio.sleep(0.4)
                 else:
-                    logger.info("Slow-path: Performing smooth stepped stabilization")
-                    for step in [0.25, 0.5, 0.75, 1.0]:
-                        await page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {step});")
-                        await asyncio.sleep(0.3)
-
-                    # Wait for result count to stabilize after scrolling
-                    prev_count = 0
-                    for _ in range(20):
-                        current_count = await page.evaluate(result_count_js)
-                        if current_count >= 10 and current_count == prev_count:
-                            break
-                        prev_count = current_count
-                        await asyncio.sleep(0.2)
-
-                    # Poll for image mapping to complete
-                    for _ in range(30):
-                        if await page.evaluate(is_mapped_js):
-                            break
-                        await asyncio.sleep(0.1)
-
+                    # Web results do not lazy-load — simple image mapping check
+                    # with a short wait, no scroll required.
+                    if await page.evaluate(is_mapped_js):
+                        logger.info("Fast-path triggered: Real images mapped")
+                    else:
+                        logger.info("Waiting for image mapping to complete")
+                        for _ in range(20):
+                            if await page.evaluate(is_mapped_js):
+                                break
+                            await asyncio.sleep(0.1)
                     await asyncio.sleep(0.4)
+
             except Exception as e:
                 logger.warning(f"Stabilization failed: {e}")
                 await asyncio.sleep(1.0)

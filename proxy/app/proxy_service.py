@@ -54,6 +54,10 @@ _active_profile_idx: int = 0
 _profile_flagged: dict[int, bool] = {}
 _browser: uc.Browser | None = None
 
+# Per-profile locks prevent keepalive and get_browser() from starting
+# concurrent browser instances on the same profile directory.
+_profile_locks: dict[int, asyncio.Lock] = {}
+
 
 def _init_profile_pool() -> None:
     """Populate the profile pool from environment variables.
@@ -76,6 +80,7 @@ def _init_profile_pool() -> None:
 
     _PROFILES = profiles
     _profile_flagged = {i: False for i in range(len(_PROFILES))}
+    _profile_locks = {i: asyncio.Lock() for i in range(len(_PROFILES))}
     logger.info(f"Profile pool initialised: {_PROFILES}")
 
 
@@ -256,12 +261,15 @@ async def get_browser() -> uc.Browser:
 
         logger.info(f"Initializing browser with profile {idx} ({profile})")
 
-        _browser = await uc.start(
-            user_data_dir=profile,
-            browser_executable_path='/usr/bin/brave-browser-stable',
-            headless=True,
-            browser_args=args
-        )
+        # Acquire the profile lock to prevent keepalive from holding
+        # the same profile directory concurrently.
+        async with _profile_locks.get(idx, asyncio.Lock()):
+            _browser = await uc.start(
+                user_data_dir=profile,
+                browser_executable_path='/usr/bin/brave-browser-stable',
+                headless=True,
+                browser_args=args
+            )
 
         _egress_timezone = await detect_egress_timezone(proxy)
 
@@ -337,7 +345,9 @@ async def _keepalive_loop(profile_idx: int) -> None:
                         except Exception:
                             pass
             else:
-                # Inactive profile — spin up a temporary browser
+                # Inactive profile — spin up a temporary browser.
+                # Acquire the profile lock so get_browser() cannot try to
+                # start a browser on this profile while keepalive holds it.
                 proxy = os.environ.get('PROXY_URL', '')
                 args = [
                     "--no-sandbox",
@@ -351,25 +361,27 @@ async def _keepalive_loop(profile_idx: int) -> None:
                 if proxy:
                     args.append(f'--proxy-server={proxy}')
 
-                tmp_browser = await uc.start(
-                    user_data_dir=profile_path,
-                    browser_executable_path='/usr/bin/brave-browser-stable',
-                    headless=True,
-                    browser_args=args
-                )
-                try:
-                    page = await tmp_browser.get('https://www.google.com/webhp')
-                    await asyncio.sleep(random.uniform(3.0, 6.0))
-                    await page.evaluate("window.scrollBy(0, 300)")
-                    await asyncio.sleep(random.uniform(1.0, 2.0))
-                    logger.info(
-                        f"Keepalive complete for inactive profile {profile_idx}"
+                lock = _profile_locks.get(profile_idx, asyncio.Lock())
+                async with lock:
+                    tmp_browser = await uc.start(
+                        user_data_dir=profile_path,
+                        browser_executable_path='/usr/bin/brave-browser-stable',
+                        headless=True,
+                        browser_args=args
                     )
-                finally:
                     try:
-                        await tmp_browser.stop()
-                    except Exception:
-                        pass
+                        page = await tmp_browser.get('https://www.google.com/webhp')
+                        await asyncio.sleep(random.uniform(3.0, 6.0))
+                        await page.evaluate("window.scrollBy(0, 300)")
+                        await asyncio.sleep(random.uniform(1.0, 2.0))
+                        logger.info(
+                            f"Keepalive complete for inactive profile {profile_idx}"
+                        )
+                    finally:
+                        try:
+                            await tmp_browser.stop()
+                        except Exception:
+                            pass
 
         except Exception as e:
             logger.warning(f"Keepalive failed for profile {profile_idx}: {e}")

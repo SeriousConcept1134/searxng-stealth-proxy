@@ -488,10 +488,25 @@ async def _keepalive_loop(profile_idx: int) -> None:
     while True:
         interval = random.uniform(_KEEPALIVE_MIN, _KEEPALIVE_MAX)
 
+        # Sleep/wake detection: record monotonic time before sleeping.
+        # If the system went to sleep, monotonic time stops advancing — so
+        # when we wake, actual_elapsed >> interval, revealing the gap.
+        sleep_start = time.monotonic()
+        await asyncio.sleep(interval)
+        actual_elapsed = time.monotonic() - sleep_start
+
+        # If we woke more than 5 minutes late, the system was likely asleep.
+        # Skip the normal interval logic and run keepalive immediately.
+        if actual_elapsed > interval + 300:
+            logger.info(
+                f"Sleep/wake detected (expected {interval/60:.0f}m, "
+                f"actual {actual_elapsed/60:.0f}m) — "
+                f"running immediate keepalive for profile {profile_idx}"
+            )
+
         if _profile_flagged.get(profile_idx, False):
             profile_path = _PROFILES[profile_idx] if profile_idx < len(_PROFILES) else None
             if not profile_path:
-                await asyncio.sleep(interval)
                 continue
 
             logger.info(f"Recovery check for flagged profile {profile_idx}")
@@ -501,7 +516,6 @@ async def _keepalive_loop(profile_idx: int) -> None:
             if _BROWSER_MODE == 'concurrent':
                 b = _browsers.get(profile_idx)
                 if b is None:
-                    await asyncio.sleep(interval)
                     continue
                 try:
                     probe_query, probe_tbm = random.choice(_KEEPALIVE_QUERIES)
@@ -533,7 +547,6 @@ async def _keepalive_loop(profile_idx: int) -> None:
                         )
                 except Exception as e:
                     logger.warning(f"Recovery check failed for profile {profile_idx}: {e}")
-                await asyncio.sleep(interval)
                 continue
 
             # on_demand mode — clear stale locks and spin up a temporary browser.
@@ -610,13 +623,10 @@ async def _keepalive_loop(profile_idx: int) -> None:
                         await asyncio.sleep(3.0)
             except Exception as e:
                 logger.warning(f"Recovery check failed for profile {profile_idx}: {e}")
-
-            await asyncio.sleep(interval)
             continue
 
         profile_path = _PROFILES[profile_idx] if profile_idx < len(_PROFILES) else None
         if not profile_path:
-            await asyncio.sleep(interval)
             continue
 
         # Pick 2–3 random queries for this keepalive cycle
@@ -629,7 +639,6 @@ async def _keepalive_loop(profile_idx: int) -> None:
                 # Use it directly without any locking.
                 b = _browsers.get(profile_idx)
                 if b is None:
-                    await asyncio.sleep(interval)
                     continue
                 logger.info(
                     f"Keepalive: running {n_queries} humanized searches "
@@ -676,8 +685,6 @@ async def _keepalive_loop(profile_idx: int) -> None:
 
         except Exception as e:
             logger.warning(f"Keepalive failed for profile {profile_idx}: {e}")
-
-        await asyncio.sleep(interval)
 
 
 def clean_html(content):
@@ -917,14 +924,24 @@ async def _do_search(url: str, _tried_profiles: set | None = None) -> HTMLRespon
                     }})()
                 """
 
-                if tbm_val == 'vid':
-                    # Video results use lazy-load — scroll to trigger full render
-                    # before checking image mapping.
+                if tbm_val == 'vid' and start_val in ('', '0'):
+                    # Initial video results page — uses lazy-load on scroll.
+                    # Scroll to trigger full render before checking image mapping.
                     result_count_js = f"document.querySelectorAll('{selectors}').length"
-                    result_count = await page.evaluate(result_count_js)
 
-                    if result_count >= 10 and await page.evaluate(is_mapped_js):
-                        logger.info("Fast-path triggered: Real images mapped")
+                    # Fast-path: only skip scroll if result count has already
+                    # stabilized (two consecutive equal readings) AND images are
+                    # mapped. A single reading >= 10 is insufficient — it may
+                    # only reflect the first batch of lazy-loaded results.
+                    count_a = await page.evaluate(result_count_js)
+                    await asyncio.sleep(0.3)
+                    count_b = await page.evaluate(result_count_js)
+                    count_stable = count_a == count_b and count_a >= 10
+
+                    if count_stable and await page.evaluate(is_mapped_js):
+                        logger.info(
+                            f"Fast-path triggered: {count_a} results mapped"
+                        )
                         await asyncio.sleep(0.4)
                     else:
                         logger.info("Slow-path: Performing smooth stepped stabilization")
@@ -949,8 +966,8 @@ async def _do_search(url: str, _tried_profiles: set | None = None) -> HTMLRespon
 
                         await asyncio.sleep(0.4)
                 else:
-                    # Web results do not lazy-load — simple image mapping check
-                    # with a short wait, no scroll required.
+                    # Web results and paginated video results — no lazy-load,
+                    # simple image mapping check with short poll, no scroll.
                     if await page.evaluate(is_mapped_js):
                         logger.info("Fast-path triggered: Real images mapped")
                     else:
@@ -959,7 +976,12 @@ async def _do_search(url: str, _tried_profiles: set | None = None) -> HTMLRespon
                             if await page.evaluate(is_mapped_js):
                                 break
                             await asyncio.sleep(0.1)
-                    await asyncio.sleep(0.4)
+                    # Extra settle time for paginated video results — the DOM
+                    # may still be injecting the final result node after images map.
+                    if tbm_val == 'vid':
+                        await asyncio.sleep(0.5)
+                    else:
+                        await asyncio.sleep(0.4)
 
             except Exception as e:
                 logger.warning(f"Stabilization failed: {e}")
